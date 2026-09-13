@@ -47,6 +47,7 @@ max_age = 10000                         # zoxide's _ZO_MAXAGE
 # text typed after the alias becomes the script's arguments.
 [launcher.aliases]
 # "Visual Studio Code" = ["vsc"]
+# "Search emoji" = ["e"]                # then "e heart" searches emoji, like "emoji heart"
 
 # Commands defined right here, shown like scripts.
 # [[launcher.commands]]

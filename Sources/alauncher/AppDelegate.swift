@@ -29,7 +29,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         apply(configStore.current)
 
         Dictation.start(configStore: configStore)
-        Launcher.start(configStore: configStore, commands: builtInCommands())
+        let store: ConfigStore = configStore
+        Launcher.start(configStore: store, commands: builtInCommands()) { text in
+            Dictation.insert(text, settings: store.current.dictation.insert)
+        }
     }
 
     func applicationWillTerminate(_ notification: Notification) {

@@ -65,13 +65,27 @@ public enum LauncherCLI {
             calculate: context.calculatorEnabled ? context.calculator : nil,
             maxResults: context.maxResults
         )
+        // An emoji search parses the index first, timed on its own.
+        var emoji: (index: EmojiIndex, milliseconds: Double)?
+        if ResultBuilder.emojiQuery(query, in: catalog) != nil {
+            let start = DispatchTime.now().uptimeNanoseconds
+            let index = EmojiIndex.load()
+            emoji = (index, Double(DispatchTime.now().uptimeNanoseconds - start) / 1_000_000)
+        }
         let start = DispatchTime.now().uptimeNanoseconds
-        let rows = builder.rows(for: query, in: catalog, now: context.now())
+        let rows = builder.rows(for: query, in: catalog, now: context.now(), emojiIndex: { emoji?.index ?? EmojiIndex.load() })
         let milliseconds = Double(DispatchTime.now().uptimeNanoseconds - start) / 1_000_000
         for row in rows {
             context.out(line(for: row))
         }
-        context.err(String(format: "# %d rows from %d items in %.2f ms", rows.count, catalog.items.count, milliseconds))
+        if let emoji {
+            context.err(String(
+                format: "# %d rows from %d emoji in %.2f ms, after parsing them in %.2f ms",
+                rows.count, emoji.index.entries.count, milliseconds, emoji.milliseconds
+            ))
+        } else {
+            context.err(String(format: "# %d rows from %d items in %.2f ms", rows.count, catalog.items.count, milliseconds))
+        }
         return 0
     }
 
@@ -138,6 +152,9 @@ public enum LauncherCLI {
             return line
         case .choice(let choice):
             return "  \(choice.title)"
+        case .emoji(let match):
+            let line = String(format: "%8.1f", match.score) + "  emoji    \(match.entry.emoji) \(row.title)"
+            return match.matchedKeyword.map { line + "  (\($0))" } ?? line
         }
     }
 

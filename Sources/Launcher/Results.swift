@@ -13,6 +13,8 @@ struct LauncherRow: Sendable {
         case item(RankedItem)
         /// One choice of a dropdown argument, in argument mode.
         case choice(ScriptCommand.Argument.Choice)
+        /// An emoji, in emoji search (`emoji <text>`). Enter types it.
+        case emoji(EmojiMatch)
     }
 
     var content: Content
@@ -32,6 +34,7 @@ struct LauncherRow: Sendable {
         case .calculationError: return "calc:error"
         case .item(let ranked): return ranked.item.id
         case .choice(let choice): return "choice:\(choice.value)"
+        case .emoji(let match): return EmojiIndex.frecencyID(for: match.entry.emoji)
         }
     }
 
@@ -42,7 +45,7 @@ struct LauncherRow: Sendable {
 }
 
 /// Query → rows: the calculator row on top when the query is a calculation, then
-/// the ranked items. Runs on every keystroke.
+/// the ranked items; or emoji, for `emoji <text>`. Runs on every keystroke.
 struct ResultBuilder {
     var ranker: Ranker
     /// Nil when `calculator.enabled` is off.
@@ -50,8 +53,16 @@ struct ResultBuilder {
     /// `launcher.maxResults`, counting the calculator row.
     var maxResults: Int
 
-    func rows(for query: String, in catalog: Catalog, now: Date = Date()) -> [LauncherRow] {
+    /// `emojiIndex` is only called for an emoji search, so the index loads when one starts.
+    func rows(
+        for query: String, in catalog: Catalog, now: Date = Date(), emojiIndex: () -> EmojiIndex = EmojiIndex.load
+    ) -> [LauncherRow] {
         guard maxResults > 0 else { return [] }
+        if let text = Self.emojiQuery(query, in: catalog) {
+            return emojiIndex()
+                .search(text, limit: maxResults, frecency: ranker.frecency, frecencyWeight: ranker.frecencyWeight, now: now)
+                .map(Self.emojiRow)
+        }
         var rows: [LauncherRow] = []
         let trimmed = query.trimmingCharacters(in: .whitespacesAndNewlines)
         if !trimmed.isEmpty, let calculate, let row = Self.calculatorRow(for: calculate(trimmed), input: trimmed) {
@@ -64,6 +75,38 @@ struct ResultBuilder {
             rows.append(Self.itemRow(rankedItem, icon: catalog.entry(for: rankedItem.item.id)?.icon))
         }
         return rows
+    }
+
+    /// For `<alias> <text>` with an alias of Search emoji: the text, which may be empty. Nil for
+    /// any other query, or when the item is excluded.
+    static func emojiQuery(_ query: String, in catalog: Catalog) -> String? {
+        guard let entry = catalog.entry(for: EmojiSearchItem.id) else { return nil }
+        let text = query.drop(while: \.isWhitespace)
+        guard let separator = text.firstIndex(where: \.isWhitespace) else { return nil }
+        let word = FuzzyMatcher.normalizedKey(String(text[..<separator]))
+        guard !word.isEmpty, entry.item.aliases.contains(where: { FuzzyMatcher.normalizedKey($0) == word }) else {
+            return nil
+        }
+        return String(text[text.index(after: separator)...])
+    }
+
+    static func emojiRow(_ match: EmojiMatch) -> LauncherRow {
+        LauncherRow(
+            content: .emoji(match),
+            title: sentenceCased(match.entry.name),
+            titlePositions: match.titlePositions,
+            subtitle: match.matchedKeyword,
+            hint: "",
+            icon: nil,
+            isEnabled: true
+        )
+    }
+
+    /// "Party popper". Only when the capital is one character, so the highlight offsets still hold.
+    static func sentenceCased(_ name: String) -> String {
+        guard let first = name.first else { return name }
+        let capital = String(first).uppercased()
+        return capital.count == 1 ? capital + name.dropFirst() : name
     }
 
     static func calculatorRow(for outcome: CalcOutcome, input: String) -> LauncherRow? {

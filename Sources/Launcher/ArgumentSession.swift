@@ -78,7 +78,7 @@ struct ArgumentSession: Sendable {
             return script.arguments.isEmpty ? [undeclaredArgument] : script.arguments
         case .command:
             return [undeclaredArgument]
-        case .app, .builtIn:
+        case .app, .builtIn, .emojiSearch:
             return nil
         }
     }

@@ -16,11 +16,11 @@ It is configured only through text files, so there is no settings UI. The produc
 | `Sources/Core` | Config model, loader and store (TOML via TOMLDecoder), plus `Paths` and `Log`. |
 | `Sources/Overlay` | The bottom-of-screen pill and the `TextPanel` popup. AppKit only. |
 | `Sources/Dictation` | See below. |
-| `Sources/Launcher` | Launcher panel, app and script index, script runner, calculator row. |
+| `Sources/Launcher` | Launcher panel, app and script index, script runner, calculator row, emoji search rows. |
 | `Packages/Calc` | Calculator library. Its contract is `docs/calc-grammar.md`. |
-| `Packages/Search` | Fuzzy matcher, zoxide frecency, ranker, Raycast script-header parser. Its contract is `docs/search-spec.md`. |
+| `Packages/Search` | Fuzzy matcher, zoxide frecency, ranker, Raycast script-header parser, emoji index. Its contract is `docs/search-spec.md`. |
 | `Resources` | `Info.plist`, and `default-config.toml`, which documents every config key. |
-| `scripts` | Build, sign and one-time signing setup. |
+| `scripts` | Build, sign and one-time signing setup, and the emoji data generator. |
 
 `Sources/Dictation` holds:
 - the key monitor (an active `CGEventTap`)
@@ -37,6 +37,7 @@ It is configured only through text files, so there is no settings UI. The produc
 - `just test`: run all unit tests (Calc, Search, root).
 - `just logs`: follow `~/Library/Logs/alauncher/alauncher.log`.
 - `just setup-signing`: one-time. Creates the self-signed identity that keeps macOS permissions across rebuilds.
+- `xcrun swift scripts/generate-emoji-data.swift <folder> > Packages/Search/Sources/Search/EmojiData.swift`: regenerates the emoji search data after a macOS update adds emoji. The script's header lists the Unicode and CLDR files `<folder>` must hold.
 
 Swift, the SDK and `codesign` come from Xcode (`xcrun swift`). The Nix dev shell (`direnv allow`) only adds `just`, `jq` and `shellcheck`.
 

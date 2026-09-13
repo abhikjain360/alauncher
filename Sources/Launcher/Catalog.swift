@@ -22,6 +22,15 @@ enum ItemAction: Sendable {
     case script(ScriptCommand)
     case command(CommandSettings)
     case builtIn(BuiltInCommand)
+    /// "Search emoji": fills in `emoji `, which lists emoji.
+    case emojiSearch
+}
+
+/// The "Search emoji" item. A query of one of its aliases, a space and text lists emoji.
+enum EmojiSearchItem {
+    static let id = "emoji-search"
+    static let title = "Search emoji"
+    static let alias = "emoji"
 }
 
 /// An item with everything needed to draw and activate it.
@@ -35,7 +44,7 @@ struct CatalogEntry: Sendable {
         switch action {
         case .app(let path): return path
         case .script(let script): return script.path.path
-        case .command, .builtIn: return nil
+        case .command, .builtIn, .emojiSearch: return nil
         }
     }
 
@@ -132,6 +141,18 @@ enum CatalogBuilder {
                 kind: .command
             )
             entries.append(CatalogEntry(item: item, action: .builtIn(builtIn), icon: .symbol("command")))
+        }
+
+        if !exclude.excludes(title: EmojiSearchItem.title) {
+            // It takes inline text, so Tab fills in `emoji `; ResultBuilder turns that text into emoji.
+            let item = SearchItem(
+                id: EmojiSearchItem.id,
+                title: EmojiSearchItem.title,
+                aliases: aliases([EmojiSearchItem.alias], title: EmojiSearchItem.title),
+                kind: .command,
+                argumentCount: 0
+            )
+            entries.append(CatalogEntry(item: item, action: .emojiSearch, icon: .glyph("😀")))
         }
 
         return Catalog(entries: entries)

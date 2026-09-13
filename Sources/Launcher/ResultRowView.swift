@@ -1,7 +1,9 @@
 import AppKit
+import Search
 
 /// One result row: a 32 pt icon, the title with its matched characters in
 /// semibold, the subtitle in the secondary color, and a right-aligned hint.
+/// An emoji row draws its emoji as text where the icon goes.
 @MainActor
 final class ResultRowView: NSView {
     static let height: CGFloat = 44
@@ -15,6 +17,8 @@ final class ResultRowView: NSView {
     private(set) var iconSource: IconSource?
 
     private let iconView = NSImageView()
+    /// An emoji row's emoji, drawn as text so that no bitmap is cached for it.
+    private let glyphLabel = NSTextField(labelWithString: "")
     private let titleLabel = NSTextField(labelWithString: "")
     private let hintLabel = NSTextField(labelWithString: "")
 
@@ -26,13 +30,16 @@ final class ResultRowView: NSView {
         super.init(frame: frameRect)
         iconView.imageScaling = .scaleProportionallyUpOrDown
         iconView.contentTintColor = .secondaryLabelColor
+        glyphLabel.font = .systemFont(ofSize: 26)
+        glyphLabel.alignment = .center
+        glyphLabel.isHidden = true
         titleLabel.lineBreakMode = .byTruncatingTail
         titleLabel.maximumNumberOfLines = 1
         titleLabel.cell?.truncatesLastVisibleLine = true
         hintLabel.font = .systemFont(ofSize: 12)
         hintLabel.textColor = .secondaryLabelColor
         hintLabel.alignment = .right
-        for view in [iconView, titleLabel, hintLabel] {
+        for view in [iconView, glyphLabel, titleLabel, hintLabel] {
             addSubview(view)
         }
     }
@@ -47,6 +54,13 @@ final class ResultRowView: NSView {
         hintLabel.stringValue = hint ?? row.hint
         hintLabel.textColor = hint == nil ? .secondaryLabelColor : .controlAccentColor
         iconView.alphaValue = row.isEnabled ? 1 : 0.5
+        if case .emoji(let match) = row.content {
+            glyphLabel.stringValue = match.entry.emoji
+        } else {
+            glyphLabel.stringValue = ""
+        }
+        glyphLabel.isHidden = glyphLabel.stringValue.isEmpty
+        iconView.isHidden = !glyphLabel.isHidden
         if iconSource != row.icon {
             iconSource = row.icon
             iconView.image = nil
@@ -62,6 +76,11 @@ final class ResultRowView: NSView {
         super.layout()
         let height = bounds.height
         iconView.frame = NSRect(x: 16, y: (height - 32) / 2, width: 32, height: 32)
+        if !glyphLabel.isHidden {
+            // Centered on the icon slot.
+            let glyphHeight = ceil(glyphLabel.intrinsicContentSize.height)
+            glyphLabel.frame = NSRect(x: 8, y: (height - glyphHeight) / 2, width: 48, height: glyphHeight)
+        }
 
         let hintWidth = hintLabel.stringValue.isEmpty ? 0 : ceil(hintLabel.intrinsicContentSize.width)
         hintLabel.frame = NSRect(x: bounds.width - 18 - hintWidth, y: (height - 16) / 2, width: hintWidth, height: 16)

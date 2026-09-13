@@ -104,7 +104,7 @@ extension FuzzyMatcher {
     }
 
     /// The same folded key is used for aliases and for the space-insensitive query check.
-    internal static func normalizedKey(_ text: String) -> String {
+    public static func normalizedKey(_ text: String) -> String {
         String(normalizedCharacters(in: text))
     }
 

@@ -26,13 +26,13 @@ struct CLITests {
         let output = Output()
         #expect(LauncherCLI.run(["search", "c"], context: context(output)) == 0)
         #expect(output.out.first == "= 299,792,458  copy: 299792458")
-        #expect(output.out.count == 7)
+        #expect(output.out.count == 8)
         #expect(!output.out.contains { $0.contains("Safari") })
         let calculator = try #require(output.out.first { $0.contains("Calculator") })
         #expect(calculator.hasSuffix("  app      Calculator  app:/System/Applications/Calculator.app"))
         let score = try #require(Double(calculator.prefix(8).trimmingCharacters(in: .whitespaces)))
         #expect(score > 400)
-        #expect(output.err.last?.hasPrefix("# 7 rows from 7 items in") == true)
+        #expect(output.err.last?.hasPrefix("# 8 rows from 8 items in") == true)
     }
 
     @Test("search shows inline arguments and the empty query's frecent rows")
@@ -46,6 +46,17 @@ struct CLITests {
         let empty = Output()
         #expect(LauncherCLI.run(["search"], context: context(empty, frecency: frecency)) == 0)
         #expect(empty.out == ["     4.0  command  Lock screen  command:Lock screen"])
+    }
+
+    @Test("search lists emoji for `emoji <text>`, with the keyword that matched")
+    func searchEmoji() throws {
+        let output = Output()
+        #expect(LauncherCLI.run(["search", "emoji", "tada"], context: context(output)) == 0)
+        let first = try #require(output.out.first)
+        #expect(first.hasSuffix("  emoji    🎉 Party popper  (tada)"))
+        let score = try #require(Double(first.prefix(8).trimmingCharacters(in: .whitespaces)))
+        #expect(score > 0)
+        #expect(output.err.last?.contains(" emoji in ") == true)
     }
 
     @Test("calc prints the outcome, and fails when it isn't a result")
@@ -78,7 +89,8 @@ struct CLITests {
         #expect(output.out.contains("script:/scripts/github.sh\tGitHub Search\taliases: gh\targs: 1"))
         #expect(output.out.contains("script:/scripts/pass-choose.sh\tPass\targs: inline"))
         #expect(output.out.contains("command:Lock screen\tLock screen\taliases: lock\targs: inline"))
-        #expect(output.err.last?.hasPrefix("# 7 items (4 apps, 2 scripts, 1 command), scanned in") == true)
+        #expect(output.out.contains("emoji-search\tSearch emoji\taliases: emoji\targs: inline"))
+        #expect(output.err.last?.hasPrefix("# 8 items (4 apps, 2 scripts, 2 commands), scanned in") == true)
     }
 
     @Test("an unknown or missing subcommand prints usage")
@@ -110,6 +122,7 @@ struct CLITests {
             "app:\(AppIndex.finderPath)",
             "script:\(dir.path)/Scripts/hello.sh",
             "command:Say",
+            "emoji-search",
         ])
         #expect(catalog.entry(for: "script:\(dir.path)/Scripts/hello.sh")?.item.aliases == ["hf"])
     }

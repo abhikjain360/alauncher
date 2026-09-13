@@ -50,6 +50,23 @@ public enum Dictation {
         controller.retryLastDictation()
     }
 
+    /// Types `text` into the frontmost app the way dictation does, for the launcher's emoji.
+    /// Without permission to post key events it goes on the clipboard instead.
+    public static func insert(_ text: String, settings: InsertSettings) {
+        guard Inserter.shared.canPostEvents else {
+            NSPasteboard.general.clearContents()
+            NSPasteboard.general.setString(text, forType: .string)
+            OverlayPill.shared.flash("copied (no permission to type)")
+            return
+        }
+        Task {
+            let result = await Inserter.shared.insert(text, targetPID: nil, settings: settings)
+            guard let aborted = result.aborted else { return }
+            Log.main("insert: \(text.count) chars from the launcher not inserted (\(aborted.rawValue))")
+            OverlayPill.shared.flash("not inserted", isError: true)
+        }
+    }
+
     /// Oldest first.
     public static var history: [DictationRecord] {
         controller?.records ?? sharedHistory(limit: Config().dictation.historyLimit).records

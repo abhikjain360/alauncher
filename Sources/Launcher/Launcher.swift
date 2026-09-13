@@ -7,13 +7,16 @@ public enum Launcher {
     private static var configStore: ConfigStore?
     private static var previousOnChange: ((Config) -> Void)?
 
-    /// Registers the hotkey, builds the index and follows config changes.
+    /// Registers the hotkey, builds the index and follows config changes. `insert` types
+    /// text into the frontmost app: a picked emoji.
     ///
     /// `configStore.onChange` is chained rather than replaced: a handler set before
     /// this call keeps being called first. One set after it replaces the launcher's.
-    public static func start(configStore: ConfigStore, commands: [BuiltInCommand]) {
+    public static func start(
+        configStore: ConfigStore, commands: [BuiltInCommand], insert: @escaping @MainActor (String) -> Void
+    ) {
         guard controller == nil else { return }
-        let controller = LauncherController(config: configStore.current, builtIns: commands)
+        let controller = LauncherController(config: configStore.current, builtIns: commands, insert: insert)
         self.controller = controller
         self.configStore = configStore
 

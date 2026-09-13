@@ -97,8 +97,9 @@ public struct RankedItem: Sendable {
 
 /// Orders items by fuzzy-match quality blended with frecency.
 public struct Ranker: Sendable {
-    private let frecency: FrecencyStore
-    private let frecencyWeight: Double
+    /// Emoji search blends in the same frecency.
+    public let frecency: FrecencyStore
+    public let frecencyWeight: Double
     private let matcherCache: MatcherCache
 
     public init(frecency: FrecencyStore, frecencyWeight: Double = 1) {

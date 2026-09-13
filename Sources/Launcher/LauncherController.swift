@@ -36,12 +36,14 @@ struct LauncherEffects {
     var run: @MainActor (ScriptInvocation, [String]) -> Void
     var recordLaunch: @MainActor (FrecencyStore, String) -> Void
     var beep: @MainActor () -> Void
+    /// Types text into the frontmost app: a picked emoji.
+    var insert: @MainActor (String) -> Void
 
     /// Frecency writes touch the disk, so they run here, in order. A store swap after
     /// a config change is queued here too, behind the writes it must see.
     static let frecencyQueue = DispatchQueue(label: "alauncher.frecency", qos: .utility)
 
-    static func live(runner: ScriptRunner) -> LauncherEffects {
+    static func live(runner: ScriptRunner, insert: @escaping @MainActor (String) -> Void) -> LauncherEffects {
         LauncherEffects(
             openApplication: { path in
                 // Activates the app that opens; alauncher itself never activates.
@@ -72,7 +74,8 @@ struct LauncherEffects {
             },
             beep: {
                 NSSound.beep()
-            }
+            },
+            insert: insert
         )
     }
 }
@@ -110,9 +113,12 @@ final class LauncherController {
     private var reindexRequested = false
     private var hasIndexed = false
     private var indexTask: Task<Void, Never>?
+    /// Parsed on the first emoji search and dropped on hide, so it isn't kept in memory.
+    private var emojiIndex: EmojiIndex?
 
-    /// The app's controller: the real stores, panel and side effects.
-    convenience init(config: Config, builtIns: [BuiltInCommand]) {
+    /// The app's controller: the real stores, panel and side effects. `insert` types a
+    /// picked emoji into the frontmost app.
+    convenience init(config: Config, builtIns: [BuiltInCommand], insert: @escaping @MainActor (String) -> Void) {
         let runner = ScriptRunner(sink: OverlayOutputSink(), extraPath: config.launcher.extraPath)
         self.init(
             config: config,
@@ -120,7 +126,7 @@ final class LauncherController {
             frecency: Self.makeFrecency(config.launcher.ranking),
             rates: Self.makeRates(config.calculator),
             runner: runner,
-            effects: .live(runner: runner),
+            effects: .live(runner: runner, insert: insert),
             usesLiveStores: true
         )
     }
@@ -294,6 +300,7 @@ final class LauncherController {
     func hide() {
         endArgumentMode(restoreQuery: false)
         pendingConfirmationID = nil
+        emojiIndex = nil
         guard let panel, panel.isVisible else { return }
         panel.dismiss()
     }
@@ -381,7 +388,7 @@ final class LauncherController {
                 rows = []
             }
         } else {
-            rows = builder.rows(for: query, in: catalog)
+            rows = builder.rows(for: query, in: catalog, emojiIndex: { self.loadedEmojiIndex() })
         }
 
         if let previousID, let index = rows.firstIndex(where: { $0.id == previousID && $0.isEnabled }) {
@@ -399,6 +406,13 @@ final class LauncherController {
         panel?.display(rows, selection: selectedIndex, hint: hint)
     }
 
+    private func loadedEmojiIndex() -> EmojiIndex {
+        if let emojiIndex { return emojiIndex }
+        let index = EmojiIndex.load()
+        emojiIndex = index
+        return index
+    }
+
     // MARK: Activation
 
     private func activate(_ row: LauncherRow) {
@@ -411,6 +425,11 @@ final class LauncherController {
         case .item(let ranked):
             guard let entry = catalog.entry(for: ranked.item.id) else { return }
             activate(entry, arguments: ranked.arguments)
+        case .emoji(let match):
+            let emoji = match.entry.emoji
+            effects.recordLaunch(frecency, EmojiIndex.frecencyID(for: emoji))
+            hide()
+            effects.insert(emoji)
         case .calculationError, .choice:
             return
         }
@@ -426,6 +445,9 @@ final class LauncherController {
             effects.recordLaunch(frecency, entry.item.id)
             hide()
             command.action()
+        case .emojiSearch:
+            effects.recordLaunch(frecency, entry.item.id)
+            startEmojiSearch(entry)
         case .script, .command:
             let declared = entry.item.argumentCount ?? 0
             if declared > 0, (arguments?.count ?? 0) < declared {
@@ -444,11 +466,19 @@ final class LauncherController {
         switch entry.action {
         case .script(let script): invocation = ScriptInvocation(script: script)
         case .command(let command): invocation = ScriptInvocation(command: command)
-        case .app, .builtIn: return
+        case .app, .builtIn, .emojiSearch: return
         }
         effects.recordLaunch(frecency, entry.item.id)
         hide()
         effects.run(invocation, arguments)
+    }
+
+    /// Search emoji: fills in `<alias> `, which lists emoji.
+    private func startEmojiSearch(_ entry: CatalogEntry) {
+        pendingConfirmationID = nil
+        query = (entry.item.aliases.first ?? EmojiSearchItem.alias) + " "
+        panel?.setText(query)
+        updateRows(keepSelection: false)
     }
 
     // MARK: Argument mode
@@ -566,7 +596,8 @@ extension LauncherController: LauncherPanelDelegate {
     }
 
     /// On a script that takes arguments: fills in `<alias> ` for inline arguments, or
-    /// enters argument mode. In argument mode: the next or previous argument.
+    /// enters argument mode. On Search emoji: fills in `emoji `. In argument mode: the
+    /// next or previous argument.
     func panelTab(backward: Bool) {
         if var session {
             guard !session.awaitingConfirmation else { return }
@@ -585,6 +616,11 @@ extension LauncherController: LauncherPanelDelegate {
         }
         guard !backward, let ranked = selectedRow?.rankedItem, ranked.item.argumentCount != nil,
               let entry = catalog.entry(for: ranked.item.id) else { return }
+        if case .emojiSearch = entry.action {
+            // Even with the alias typed exactly: the text after it is the search.
+            activate(entry, arguments: nil)
+            return
+        }
         let typed = query.trimmingCharacters(in: .whitespaces)
         if ranked.arguments == nil, let alias = ranked.item.aliases.first, typed.caseInsensitiveCompare(alias) != .orderedSame {
             query = alias + " "
@@ -612,5 +648,16 @@ extension LauncherController: LauncherPanelDelegate {
         guard rows.indices.contains(index), rows[index].isEnabled else { return }
         selectedIndex = index
         panelActivate()
+    }
+
+    /// ⌘C on an emoji row copies the emoji and closes the panel.
+    func panelCopySelection() -> Bool {
+        guard session == nil, case .emoji(let match)? = selectedRow?.content else { return false }
+        let emoji = match.entry.emoji
+        effects.copy(emoji)
+        effects.recordLaunch(frecency, EmojiIndex.frecencyID(for: emoji))
+        hide()
+        effects.flash("copied \(emoji)", false)
+        return true
     }
 }

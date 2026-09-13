@@ -11,6 +11,8 @@ protocol LauncherPanelDelegate: AnyObject {
     func panelCancel()
     func panelDidResignKey()
     func panelClickedRow(at index: Int)
+    /// ⌘C with no text selected in the field. True when the controller copied something.
+    func panelCopySelection() -> Bool
 }
 
 /// The launcher window: a borderless, non-activating panel with the search field
@@ -307,7 +309,11 @@ final class LauncherPanel: NSPanel, NSWindowDelegate, NSTextFieldDelegate {
         guard let editor else { return super.performKeyEquivalent(with: event) }
         switch event.charactersIgnoringModifiers?.lowercased() {
         case "a": editor.selectAll(nil)
-        case "c": editor.copy(nil)
+        case "c":
+            // With no text selected, the selected row gets to copy first: an emoji row does.
+            if editor.selectedRange().length > 0 || launcherDelegate?.panelCopySelection() != true {
+                editor.copy(nil)
+            }
         case "v": editor.paste(nil)
         case "x": editor.cut(nil)
         default: return super.performKeyEquivalent(with: event)

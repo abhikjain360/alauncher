@@ -198,18 +198,67 @@ struct QueryTests {
     @Test("a keystroke turns into rows in under 5 ms with 300 items")
     func keystrokeBudget() {
         let benchmark = Fixture.benchmark()
-        #expect(benchmark.catalog.items.count == 300)
+        #expect(benchmark.catalog.items.count == 301)
         let milliseconds = Fixture.millisecondsPerKeystroke(benchmark.keystrokes) { query in
             _ = benchmark.builder.rows(for: query, in: benchmark.catalog, now: now)
         }
         print("keystroke → rows: \(String(format: "%.3f", milliseconds)) ms per keystroke, \(benchmark.catalog.items.count) items")
         #expect(milliseconds < 5)
     }
+
+    @Test("`emoji <text>` lists matching emoji instead of items, with no calculator row")
+    func emojiRows() throws {
+        let hearts = rows("emoji hea")
+        #expect(hearts.count == 8)
+        #expect(hearts.allSatisfy { $0.isEmoji })
+        let first = try #require(hearts.first)
+        #expect(first.hint.isEmpty)
+        #expect(first.icon == nil)
+        #expect(first.title.first?.isUppercase == true)
+
+        let party = try #require(rows("emoji tada").first)
+        #expect(party.title == "Party popper")
+        #expect(party.subtitle == "tada")
+        #expect(party.id == "emoji:🎉")
+
+        let heart = try #require(rows("  Emoji red hea").first)
+        #expect(heart.title == "Red heart")
+        #expect(heart.titlePositions == [0, 1, 2, 4, 5, 6])
+
+        let browse = rows("emoji ")
+        #expect(browse.count == 8)
+        #expect(browse.first?.title == "Grinning face")
+        #expect(rows("emoji").first?.id == "emoji-search")
+        #expect(!rows("emoji").contains { $0.isEmoji })
+        #expect(!rows("emojis hea").contains { $0.isEmoji })
+    }
+
+    @Test("excluding Search emoji turns emoji search off; its config aliases work like `emoji`")
+    func emojiItemSettings() {
+        var excluded = LauncherSettings()
+        excluded.exclude = ["Search emoji"]
+        let catalog = Fixture.catalog(excluded)
+        #expect(catalog.entry(for: "emoji-search") == nil)
+        #expect(!rows("emoji tada", catalog).contains { $0.isEmoji })
+
+        var aliased = LauncherSettings()
+        aliased.aliases = ["Search emoji": ["e"]]
+        let withAlias = Fixture.catalog(aliased)
+        #expect(withAlias.entry(for: "emoji-search")?.item.aliases == ["emoji", "e"])
+        #expect(rows("e tada", withAlias).first?.title == "Party popper")
+    }
+}
+
+extension LauncherRow {
+    var isEmoji: Bool {
+        if case .emoji = content { return true }
+        return false
+    }
 }
 
 extension Fixture {
-    /// 300 items (290 apps with overlapping words, 10 scripts), some frecency, the
-    /// real calculator, and a sequence of keystrokes.
+    /// 301 items (290 apps with overlapping words, 10 scripts and Search emoji), some
+    /// frecency, the real calculator, and a sequence of keystrokes.
     static func benchmark() -> (catalog: Catalog, builder: ResultBuilder, keystrokes: [String]) {
         let words = ["Visual", "Studio", "Code", "Safari", "Mail", "Music", "Photos", "Terminal", "Activity",
                      "Monitor", "System", "Settings", "Preview", "Notes", "Calendar", "Finder", "Xcode"]

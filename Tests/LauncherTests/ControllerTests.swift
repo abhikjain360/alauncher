@@ -74,7 +74,8 @@ final class EffectLog {
                 store.recordLaunch(of: id)
                 self.events.append("record \(id)")
             },
-            beep: { self.events.append("beep") }
+            beep: { self.events.append("beep") },
+            insert: { self.events.append("insert \($0)") }
         )
     }
 }
@@ -368,6 +369,51 @@ struct ControllerTests {
         #expect(!panel.isVisible)
         controller.show()
         controller.panelCancel()
+        #expect(!panel.isVisible)
+    }
+
+    @Test("`emoji <text>` lists emoji; Enter types the selected one and records it")
+    func emojiInsert() async {
+        let controller = await makeController()
+        panel.type("emoji tada")
+        #expect(panel.selectedTitle == "Party popper")
+        controller.panelActivate()
+        #expect(log.events == ["record emoji:🎉", "insert 🎉"])
+        #expect(!panel.isVisible)
+        #expect(frecency.score(for: "emoji:🎉") > 0)
+    }
+
+    @Test("Enter or Tab on Search emoji fills in `emoji `, which lists emoji")
+    func emojiSearchItem() async {
+        let controller = await makeController()
+        panel.type("emoji")
+        #expect(panel.selectedTitle == "Search emoji")
+        controller.panelActivate()
+        #expect(panel.text == "emoji ")
+        #expect(panel.isVisible)
+        #expect(panel.rows.count == 8)
+        #expect(panel.rows.allSatisfy { $0.isEmoji })
+        #expect(log.events == ["record emoji-search"])
+
+        panel.type("emoji")
+        #expect(!panel.rows.contains { $0.isEmoji })
+        controller.panelTab(backward: false)
+        #expect(panel.text == "emoji ")
+        #expect(panel.rows.allSatisfy { $0.isEmoji })
+        #expect(panel.argumentTitle == nil)
+    }
+
+    @Test("⌘C copies the selected emoji; on other rows it leaves copying to the field")
+    func emojiCopy() async {
+        let controller = await makeController()
+        panel.type("saf")
+        #expect(!controller.panelCopySelection())
+        #expect(log.events.isEmpty)
+        #expect(panel.isVisible)
+
+        panel.type("emoji tada")
+        #expect(controller.panelCopySelection())
+        #expect(log.events == ["copy 🎉", "record emoji:🎉", "flash copied 🎉"])
         #expect(!panel.isVisible)
     }
 }
