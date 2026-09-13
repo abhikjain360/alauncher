@@ -1,0 +1,13 @@
+.build/
+.build-*/
+.swiftpm/
+.direnv/
+/build/
+*.xcodeproj
+xcuserdata/
+DerivedData/
+.DS_Store
+
+# Local notes and experiments, kept out of the public repo.
+docs/plan.md
+spike/
