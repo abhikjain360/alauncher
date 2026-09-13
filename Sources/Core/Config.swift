@@ -465,7 +465,7 @@ public final class ConfigStore: @unchecked Sendable {
     private let queue: DispatchQueue
     private let lock = NSLock()
     private var storedConfig = Config()
-    private var watcher: DispatchSourceFileSystemObject?
+    private var watchers: [DispatchSourceFileSystemObject] = []
     private var pendingReload: DispatchWorkItem?
     private var started = false
 
@@ -477,7 +477,7 @@ public final class ConfigStore: @unchecked Sendable {
     }
 
     deinit {
-        watcher?.cancel()
+        watchers.forEach { $0.cancel() }
         pendingReload?.cancel()
     }
 
@@ -528,7 +528,7 @@ public final class ConfigStore: @unchecked Sendable {
             ensureConfigDirectory()
             writeDefaultIfNeeded()
             loadNow()
-            startWatcher()
+            rewatch()
         }
     }
 
@@ -537,6 +537,7 @@ public final class ConfigStore: @unchecked Sendable {
             pendingReload?.cancel()
             pendingReload = nil
             loadNow()
+            rewatch()
         }
     }
 
@@ -591,27 +592,41 @@ public final class ConfigStore: @unchecked Sendable {
         }
     }
 
-    private func startWatcher() {
-        let fileDescriptor: Int32
-        #if canImport(Darwin)
-        fileDescriptor = open(configFile.deletingLastPathComponent().path, O_EVTONLY)
-        #else
-        fileDescriptor = open(configFile.deletingLastPathComponent().path, O_RDONLY)
-        #endif
-        guard fileDescriptor >= 0 else {
-            reportError("config directory: could not watch directory")
-            return
+    /// Watches the config directory, where editors save by replacing the file, and the file
+    /// itself, for editors that write in place. When config.toml is a symlink, as Home Manager's
+    /// out-of-store links are, it also watches the real file's directory: saves land there and
+    /// never touch the link. Called after every load, since a save that replaces the file leaves
+    /// the old watch on a deleted inode, and a new link can point somewhere else.
+    private func rewatch() {
+        watchers.forEach { $0.cancel() }
+        let resolved = configFile.resolvingSymlinksInPath()
+        var directories = [configFile.deletingLastPathComponent().path]
+        if resolved.deletingLastPathComponent().path != directories[0] {
+            directories.append(resolved.deletingLastPathComponent().path)
         }
+        watchers = directories.compactMap { watch($0, events: .all) }
+        if watchers.isEmpty {
+            reportError("config directory: could not watch directory")
+        }
+        // Content changes only, since reading the file mustn't trigger a reload. It can be
+        // missing (deleted, or mid-switch); the directory watch sees it come back.
+        if let file = watch(resolved.path, events: [.write, .extend, .delete, .rename, .revoke]) {
+            watchers.append(file)
+        }
+    }
 
-        let source = DispatchSource.makeFileSystemObjectSource(
-            fileDescriptor: fileDescriptor,
-            eventMask: [.all],
-            queue: queue
-        )
+    private func watch(_ path: String, events: DispatchSource.FileSystemEvent) -> DispatchSourceFileSystemObject? {
+        #if canImport(Darwin)
+        let descriptor = open(path, O_EVTONLY)
+        #else
+        let descriptor = open(path, O_RDONLY)
+        #endif
+        guard descriptor >= 0 else { return nil }
+        let source = DispatchSource.makeFileSystemObjectSource(fileDescriptor: descriptor, eventMask: events, queue: queue)
         source.setEventHandler { [weak self] in self?.directoryChanged() }
-        source.setCancelHandler { close(fileDescriptor) }
-        watcher = source
+        source.setCancelHandler { close(descriptor) }
         source.resume()
+        return source
     }
 
     private func directoryChanged() {
@@ -620,6 +635,7 @@ public final class ConfigStore: @unchecked Sendable {
             guard let self else { return }
             self.pendingReload = nil
             self.loadNow()
+            self.rewatch()
         }
         pendingReload = item
         queue.asyncAfter(deadline: .now() + 0.2, execute: item)

@@ -190,6 +190,72 @@ func configStoreWritesReloadsAndKeepsLastGoodConfig() async throws {
     store.reload()
     try await Task.sleep(for: .milliseconds(100))
     #expect(changed.count == changeCount)
+
+    // Editors that write in place, like vim with backupcopy=yes, never touch the directory.
+    try overwriteInPlace(configURL, with: "[launcher]\nmax_results = 14\n")
+    try await waitForCondition { store.current.launcher.maxResults == 14 }
+    #expect(store.current.launcher.maxResults == 14)
+}
+
+/// Home Manager's out-of-store links: config.toml is a symlink, and edits land on the real file.
+@Test(.timeLimit(.minutes(1)))
+func configStoreFollowsASymlinkedConfig() async throws {
+    let root = FileManager.default.temporaryDirectory.appendingPathComponent("alauncher-symlink-\(UUID().uuidString)", isDirectory: true)
+    let realDirectory = root.appendingPathComponent("dotfiles", isDirectory: true)
+    let configDirectory = root.appendingPathComponent("config", isDirectory: true)
+    try FileManager.default.createDirectory(at: realDirectory, withIntermediateDirectories: true)
+    try FileManager.default.createDirectory(at: configDirectory, withIntermediateDirectories: true)
+    defer { try? FileManager.default.removeItem(at: root) }
+
+    let realURL = realDirectory.appendingPathComponent("config.toml")
+    try Data("[launcher]\nmax_results = 5\n".utf8).write(to: realURL)
+    let linkURL = configDirectory.appendingPathComponent("config.toml")
+    try FileManager.default.createSymbolicLink(at: linkURL, withDestinationURL: realURL)
+
+    let store = ConfigStore(configFile: linkURL, secretsFile: configDirectory.appendingPathComponent("secrets.toml"), defaultConfigText: "")
+    store.start()
+    #expect(store.current.launcher.maxResults == 5)
+
+    // In place through the link, as vim saves a symlinked file.
+    try overwriteInPlace(linkURL, with: "[launcher]\nmax_results = 7\n")
+    try await waitForCondition { store.current.launcher.maxResults == 7 }
+    #expect(store.current.launcher.maxResults == 7)
+
+    // An atomic save of the real file, as editors do when it's opened directly.
+    let temporary = realDirectory.appendingPathComponent("config.toml.tmp")
+    try Data("[launcher]\nmax_results = 9\n".utf8).write(to: temporary)
+    _ = try FileManager.default.replaceItemAt(realURL, withItemAt: temporary)
+    try await waitForCondition { store.current.launcher.maxResults == 9 }
+    #expect(store.current.launcher.maxResults == 9)
+
+    // In place again: the watch must have moved to the replacement file.
+    try overwriteInPlace(realURL, with: "[launcher]\nmax_results = 11\n")
+    try await waitForCondition { store.current.launcher.maxResults == 11 }
+    #expect(store.current.launcher.maxResults == 11)
+
+    // A new link into another directory, as a switch can leave; saves there must be seen too.
+    let otherDirectory = root.appendingPathComponent("generation2", isDirectory: true)
+    try FileManager.default.createDirectory(at: otherDirectory, withIntermediateDirectories: true)
+    let otherURL = otherDirectory.appendingPathComponent("config.toml")
+    try Data("[launcher]\nmax_results = 13\n".utf8).write(to: otherURL)
+    let newLink = configDirectory.appendingPathComponent("config.toml.new")
+    try FileManager.default.createSymbolicLink(at: newLink, withDestinationURL: otherURL)
+    #expect(rename(newLink.path, linkURL.path) == 0)
+    try await waitForCondition { store.current.launcher.maxResults == 13 }
+    #expect(store.current.launcher.maxResults == 13)
+
+    let otherTemporary = otherDirectory.appendingPathComponent("config.toml.tmp")
+    try Data("[launcher]\nmax_results = 15\n".utf8).write(to: otherTemporary)
+    _ = try FileManager.default.replaceItemAt(otherURL, withItemAt: otherTemporary)
+    try await waitForCondition { store.current.launcher.maxResults == 15 }
+    #expect(store.current.launcher.maxResults == 15)
+}
+
+private func overwriteInPlace(_ url: URL, with text: String) throws {
+    let handle = try FileHandle(forWritingTo: url)
+    try handle.truncate(atOffset: 0)
+    try handle.write(contentsOf: Data(text.utf8))
+    try handle.close()
 }
 
 private func waitForCondition(_ condition: @escaping () -> Bool) async throws {

@@ -60,7 +60,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                 self?.configStore.reload()
             },
             BuiltInCommand(title: "Open config", subtitle: Paths.configFile.path) {
-                AppDelegate.openInTextEditor(Paths.configFile)
+                // The real file behind a symlink (Home Manager), so the editor's save doesn't
+                // replace the link with a plain file.
+                AppDelegate.openInTextEditor(Paths.configFile.resolvingSymlinksInPath())
             },
             BuiltInCommand(title: "Copy last dictation") { Dictation.copyLastDictation() },
             BuiltInCommand(title: "Retry last dictation") { Dictation.retryLastDictation() },
