@@ -366,14 +366,16 @@ private final class TokenView: NSView {
         }
     }
 
+    /// Sized by the label's cell, which includes the padding the cell draws around the text. A
+    /// truncating label's intrinsic width leaves that out, so the title would lose its tail.
     var preferredWidth: CGFloat {
-        min(240, ceil(label.intrinsicContentSize.width) + 20)
+        min(240, ceil(label.cell?.cellSize.width ?? label.intrinsicContentSize.width) + 16)
     }
 
     override func layout() {
         super.layout()
         let height = ceil(label.intrinsicContentSize.height)
-        label.frame = NSRect(x: 10, y: (bounds.height - height) / 2, width: max(0, bounds.width - 20), height: height)
+        label.frame = NSRect(x: 8, y: (bounds.height - height) / 2, width: max(0, bounds.width - 16), height: height)
     }
 
     override func draw(_ dirtyRect: NSRect) {
