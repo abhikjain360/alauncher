@@ -36,14 +36,21 @@ struct LauncherEffects {
     var run: @MainActor (ScriptInvocation, [String]) -> Void
     var recordLaunch: @MainActor (FrecencyStore, String) -> Void
     var beep: @MainActor () -> Void
-    /// Types text into the frontmost app: a picked emoji.
-    var insert: @MainActor (String) -> Void
+    /// Types text: a picked emoji, into whatever app is frontmost.
+    var insert: InsertText
+    /// The frontmost app, taken at Enter: where `mode = "type"` output goes.
+    var frontmostPID: @MainActor () -> pid_t?
+    /// Starts a choices run. `completion` gets all of its output, unless the returned cancel
+    /// runs first, which also terminates it.
+    var capture: @MainActor (ScriptInvocation, [String], @escaping @MainActor (ScriptRunResult) -> Void) -> @MainActor () -> Void
+    /// Shows or types a choices command's final text, per its mode.
+    var deliver: @MainActor (ScriptInvocation, String) -> Void
 
     /// Frecency writes touch the disk, so they run here, in order. A store swap after
     /// a config change is queued here too, behind the writes it must see.
     static let frecencyQueue = DispatchQueue(label: "alauncher.frecency", qos: .utility)
 
-    static func live(runner: ScriptRunner, insert: @escaping @MainActor (String) -> Void) -> LauncherEffects {
+    static func live(runner: ScriptRunner, insert: @escaping InsertText) -> LauncherEffects {
         LauncherEffects(
             openApplication: { path in
                 // Activates the app that opens; alauncher itself never activates.
@@ -75,7 +82,16 @@ struct LauncherEffects {
             beep: {
                 NSSound.beep()
             },
-            insert: insert
+            insert: insert,
+            frontmostPID: {
+                NSWorkspace.shared.frontmostApplication?.processIdentifier
+            },
+            capture: { invocation, arguments, completion in
+                runner.capture(invocation, arguments: arguments, completion: completion)
+            },
+            deliver: { invocation, text in
+                runner.deliver(text, for: invocation)
+            }
         )
     }
 }
@@ -86,6 +102,10 @@ struct LauncherEffects {
 @MainActor
 final class LauncherController {
     static let confirmationHint = "press ⏎ again to run"
+    /// A choices command's placeholder while a run is in flight.
+    static let runningPlaceholder = "Running…"
+    /// A choices round's placeholder when the round names none.
+    static let choicesPlaceholder = "Search"
 
     private var config: Config
     private let builtIns: [BuiltInCommand]
@@ -108,6 +128,10 @@ final class LauncherController {
     private var rows: [LauncherRow] = []
     private var selectedIndex: Int?
     private var session: ArgumentSession?
+    /// A `choices = true` command's rounds, while the panel shows them or its last run finishes.
+    private var choices: ChoicesSession?
+    /// Stops the choices run in flight.
+    private var cancelChoicesRun: (@MainActor () -> Void)?
     private var pendingConfirmationID: String?
     private var isIndexing = false
     private var reindexRequested = false
@@ -117,9 +141,9 @@ final class LauncherController {
     private var emojiIndex: EmojiIndex?
 
     /// The app's controller: the real stores, panel and side effects. `insert` types a
-    /// picked emoji into the frontmost app.
-    convenience init(config: Config, builtIns: [BuiltInCommand], insert: @escaping @MainActor (String) -> Void) {
-        let runner = ScriptRunner(sink: OverlayOutputSink(), extraPath: config.launcher.extraPath)
+    /// picked emoji, or a `mode = "type"` command's output.
+    convenience init(config: Config, builtIns: [BuiltInCommand], insert: @escaping InsertText) {
+        let runner = ScriptRunner(sink: OverlayOutputSink(insert: insert), extraPath: config.launcher.extraPath)
         self.init(
             config: config,
             builtIns: builtIns,
@@ -242,7 +266,7 @@ final class LauncherController {
             || before.exclude != after.exclude || before.aliases != after.aliases || before.commands != after.commands
         if indexChanged {
             rebuildIndex()
-        } else if panel?.isVisible == true, session == nil {
+        } else if panel?.isVisible == true, !showsOwnRows {
             updateRows(keepSelection: true)
         }
     }
@@ -288,6 +312,8 @@ final class LauncherController {
         }
         builder.maxResults = min(config.launcher.maxResults, panel.prepareToShow())
         endArgumentMode(restoreQuery: false)
+        // A run left going when the panel closed is abandoned now.
+        endChoices(restoreQuery: false)
         pendingConfirmationID = nil
         query = ""
         panel.setText("")
@@ -299,6 +325,7 @@ final class LauncherController {
 
     func hide() {
         endArgumentMode(restoreQuery: false)
+        endChoices(restoreQuery: false)
         pendingConfirmationID = nil
         emojiIndex = nil
         guard let panel, panel.isVisible else { return }
@@ -307,6 +334,12 @@ final class LauncherController {
 
     private var rowLimit: Int {
         min(config.launcher.maxResults, panel?.rowCapacity ?? config.launcher.maxResults)
+    }
+
+    /// In argument mode or a choices session the rows aren't search results, so index, rate and
+    /// config updates leave them alone.
+    private var showsOwnRows: Bool {
+        session != nil || choices != nil
     }
 
     // MARK: Index and rates
@@ -347,7 +380,7 @@ final class LauncherController {
                 icons.prefetch(builder.rows(for: "", in: newCatalog).compactMap(\.icon))
             }
         }
-        if panel?.isVisible == true, session == nil {
+        if panel?.isVisible == true, !showsOwnRows {
             updateRows(keepSelection: true)
         }
         if reindexRequested {
@@ -365,7 +398,7 @@ final class LauncherController {
     }
 
     private func ratesDidChange(_ store: CurrencyRateStore) {
-        guard store === rates, panel?.isVisible == true, session == nil else { return }
+        guard store === rates, panel?.isVisible == true, !showsOwnRows else { return }
         updateRows(keepSelection: true)
     }
 
@@ -378,7 +411,14 @@ final class LauncherController {
 
     private func updateRows(keepSelection: Bool) {
         let previousID = keepSelection ? selectedRow?.id : nil
-        if let session {
+        if let choices {
+            // No rows while a run is in flight; what's typed meanwhile filters the next round.
+            if !choices.isRunning, let round = choices.rounds.last {
+                rows = ResultBuilder.pickRows(round, query: query, limit: builder.maxResults)
+            } else {
+                rows = []
+            }
+        } else if let session {
             if session.awaitingConfirmation, let entry = catalog.entry(for: session.entryID) {
                 let ranked = RankedItem(item: entry.item, score: 0, titlePositions: [], arguments: session.values)
                 rows = [ResultBuilder.itemRow(ranked, icon: entry.icon)]
@@ -429,8 +469,8 @@ final class LauncherController {
             let emoji = match.entry.emoji
             effects.recordLaunch(frecency, EmojiIndex.frecencyID(for: emoji))
             hide()
-            effects.insert(emoji)
-        case .calculationError, .choice:
+            effects.insert(emoji, nil, true)
+        case .calculationError, .choice, .pick:
             return
         }
     }
@@ -448,6 +488,9 @@ final class LauncherController {
         case .emojiSearch:
             effects.recordLaunch(frecency, entry.item.id)
             startEmojiSearch(entry)
+        case .command(let command) where command.choices:
+            // Text typed inline after the alias filters the first round.
+            beginChoices(for: entry, command: command, filter: arguments?.joined(separator: " ") ?? "")
         case .script, .command:
             let declared = entry.item.argumentCount ?? 0
             if declared > 0, (arguments?.count ?? 0) < declared {
@@ -462,12 +505,13 @@ final class LauncherController {
     }
 
     private func run(_ entry: CatalogEntry, arguments: [String]) {
-        let invocation: ScriptInvocation
+        var invocation: ScriptInvocation
         switch entry.action {
         case .script(let script): invocation = ScriptInvocation(script: script)
         case .command(let command): invocation = ScriptInvocation(command: command)
         case .app, .builtIn, .emojiSearch: return
         }
+        invocation.targetPID = effects.frontmostPID()
         effects.recordLaunch(frecency, entry.item.id)
         hide()
         effects.run(invocation, arguments)
@@ -553,6 +597,148 @@ final class LauncherController {
         panel?.setText(query)
         updateRows(keepSelection: false)
     }
+
+    // MARK: Choices
+
+    /// Enter or Tab on a `choices = true` command: its first run, with no arguments.
+    private func beginChoices(for entry: CatalogEntry, command: CommandSettings, filter: String) {
+        effects.recordLaunch(frecency, entry.item.id)
+        pendingConfirmationID = nil
+        var invocation = ScriptInvocation(command: command)
+        invocation.targetPID = effects.frontmostPID()
+        choices = ChoicesSession(title: entry.item.title, invocation: invocation, previousQuery: query)
+        startChoicesRun(arguments: [], filter: filter)
+    }
+
+    /// Runs the command. Until it answers there are no rows, and the field starts from `filter`.
+    private func startChoicesRun(arguments: [String], filter: String) {
+        guard var session = choices else { return }
+        session.generation += 1
+        session.isRunning = true
+        let generation = session.generation
+        choices = session
+        panel?.setArgumentMode(title: session.title, placeholder: Self.runningPlaceholder, secure: false)
+        query = filter
+        panel?.setText(filter)
+        updateRows(keepSelection: false)
+        let cancel = effects.capture(session.invocation, arguments) { [weak self] result in
+            self?.choicesRunFinished(result, generation: generation)
+        }
+        if choices?.isRunning == true, choices?.generation == generation {
+            cancelChoicesRun = cancel
+        }
+    }
+
+    private func choicesRunFinished(_ result: ScriptRunResult, generation: Int) {
+        guard var session = choices, session.isRunning, session.generation == generation else { return }
+        session.isRunning = false
+        choices = session
+        cancelChoicesRun = nil
+
+        guard result.exitCode == 0 else {
+            return choicesFailed(ScriptRunner.pillText(ScriptRunner.failureText(result, title: session.title, showsStdout: false)))
+        }
+        guard !result.stdoutTruncated else {
+            return choicesFailed("\(session.title): output too large")
+        }
+        let output: ChoicesOutput
+        do {
+            output = try ChoicesOutput.parse(result.stdout)
+        } catch {
+            return choicesFailed("\(session.title): \(error)")
+        }
+
+        switch output {
+        case .done:
+            endChoices(restoreQuery: false)
+            hide()
+        case .final(let text):
+            endChoices(restoreQuery: false)
+            hide()
+            effects.deliver(session.invocation, text)
+        case .round(var round):
+            guard !session.isClosed else {
+                endChoices(restoreQuery: false)
+                effects.flash("\(session.title) closed", false)
+                return
+            }
+            // What was typed while it ran is this round's filter.
+            round.filter = query
+            session.rounds.append(round)
+            choices = session
+            showChoicesRound()
+        }
+    }
+
+    /// Flashes why a run failed, types nothing, and goes back to the round it came from; after
+    /// the first run, back to search.
+    private func choicesFailed(_ message: String) {
+        effects.flash(message, true)
+        guard choices?.isClosed == false else {
+            endChoices(restoreQuery: false)
+            return
+        }
+        returnToLastRound()
+    }
+
+    /// Shows the last round again with the filter it had; with none left, leaves the session.
+    private func returnToLastRound() {
+        guard let round = choices?.rounds.last else {
+            endChoices(restoreQuery: true)
+            return
+        }
+        query = round.filter
+        panel?.setText(query)
+        showChoicesRound()
+    }
+
+    private func showChoicesRound() {
+        guard let session = choices, let round = session.rounds.last else { return }
+        let placeholder = round.placeholder.flatMap { $0.isEmpty ? nil : $0 } ?? Self.choicesPlaceholder
+        panel?.setArgumentMode(title: session.title, placeholder: placeholder, secure: false)
+        updateRows(keepSelection: false)
+    }
+
+    /// Enter on an item: the next run, with the round's id and the item's value.
+    private func pickChoice() {
+        guard var session = choices, !session.isRunning, let round = session.rounds.last,
+              case .pick(let index)? = selectedRow?.content, round.items.indices.contains(index) else {
+            effects.beep()
+            return
+        }
+        session.rounds[session.rounds.count - 1].filter = query
+        session.invocation.targetPID = effects.frontmostPID()
+        choices = session
+        startChoicesRun(arguments: [round.id, round.items[index].value], filter: "")
+    }
+
+    /// Esc: abandons the run in flight, or leaves the round on screen, for the round before it.
+    /// From the first, back to search.
+    private func choicesBack() {
+        guard var session = choices else { return }
+        if session.isRunning {
+            cancelChoicesRun?()
+            cancelChoicesRun = nil
+            session.isRunning = false
+        } else if !session.rounds.isEmpty {
+            session.rounds.removeLast()
+        }
+        choices = session
+        returnToLastRound()
+    }
+
+    /// Ends the session, abandoning a run in flight.
+    private func endChoices(restoreQuery: Bool) {
+        guard let session = choices else { return }
+        cancelChoicesRun?()
+        cancelChoicesRun = nil
+        choices = nil
+        panel?.setArgumentMode(title: nil, placeholder: nil, secure: false)
+        guard restoreQuery else { return }
+        query = session.previousQuery
+        panel?.setText(query)
+        updateRows(keepSelection: false)
+    }
 }
 
 extension LauncherController: LauncherPanelDelegate {
@@ -580,7 +766,9 @@ extension LauncherController: LauncherPanelDelegate {
     }
 
     func panelActivate() {
-        if session != nil {
+        if choices != nil {
+            pickChoice()
+        } else if session != nil {
             submitArgument()
         } else if let row = selectedRow {
             activate(row)
@@ -589,16 +777,17 @@ extension LauncherController: LauncherPanelDelegate {
 
     /// ⌘Enter: reveal an app or script in Finder.
     func panelReveal() {
-        guard session == nil, let ranked = selectedRow?.rankedItem,
+        guard !showsOwnRows, let ranked = selectedRow?.rankedItem,
               let path = catalog.entry(for: ranked.item.id)?.revealPath else { return }
         hide()
         effects.reveal(path)
     }
 
     /// On a script that takes arguments: fills in `<alias> ` for inline arguments, or
-    /// enters argument mode. On Search emoji: fills in `emoji `. In argument mode: the
-    /// next or previous argument.
+    /// enters argument mode. On Search emoji: fills in `emoji `. On a choices command: its
+    /// first run, like Enter. In argument mode: the next or previous argument.
     func panelTab(backward: Bool) {
+        guard choices == nil else { return }
         if var session {
             guard !session.awaitingConfirmation else { return }
             var text = panel?.text ?? query
@@ -621,6 +810,10 @@ extension LauncherController: LauncherPanelDelegate {
             activate(entry, arguments: nil)
             return
         }
+        if case .command(let command) = entry.action, command.choices {
+            activate(entry, arguments: ranked.arguments)
+            return
+        }
         let typed = query.trimmingCharacters(in: .whitespaces)
         if ranked.arguments == nil, let alias = ranked.item.aliases.first, typed.caseInsensitiveCompare(alias) != .orderedSame {
             query = alias + " "
@@ -633,7 +826,9 @@ extension LauncherController: LauncherPanelDelegate {
     }
 
     func panelCancel() {
-        if session != nil {
+        if choices != nil {
+            choicesBack()
+        } else if session != nil {
             endArgumentMode(restoreQuery: true)
         } else {
             hide()
@@ -641,6 +836,14 @@ extension LauncherController: LauncherPanelDelegate {
     }
 
     func panelDidResignKey() {
+        // A choices run in flight keeps going when the panel closes, since a gpg prompt may be
+        // what took the keyboard: its final text is still delivered, to the same target app.
+        if var choices, choices.isRunning {
+            choices.isClosed = true
+            self.choices = choices
+            panel?.dismiss()
+            return
+        }
         hide()
     }
 
@@ -652,7 +855,7 @@ extension LauncherController: LauncherPanelDelegate {
 
     /// ⌘C on an emoji row copies the emoji and closes the panel.
     func panelCopySelection() -> Bool {
-        guard session == nil, case .emoji(let match)? = selectedRow?.content else { return false }
+        guard !showsOwnRows, case .emoji(let match)? = selectedRow?.content else { return false }
         let emoji = match.entry.emoji
         effects.copy(emoji)
         effects.recordLaunch(frecency, EmojiIndex.frecencyID(for: emoji))

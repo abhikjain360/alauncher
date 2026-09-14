@@ -1,4 +1,9 @@
 import Core
+import Foundation
+
+/// Types text into an app: `targetPID`'s, or whatever app is frontmost when nil. Without
+/// permission to type, `copyIfNoPermission` puts the text on the clipboard instead.
+public typealias InsertText = @MainActor (_ text: String, _ targetPID: pid_t?, _ copyIfNoPermission: Bool) -> Void
 
 /// The launcher's entry points for the app shell.
 @MainActor
@@ -7,14 +12,12 @@ public enum Launcher {
     private static var configStore: ConfigStore?
     private static var previousOnChange: ((Config) -> Void)?
 
-    /// Registers the hotkey, builds the index and follows config changes. `insert` types
-    /// text into the frontmost app: a picked emoji.
+    /// Registers the hotkey, builds the index and follows config changes. `insert` types a
+    /// picked emoji, or a `mode = "type"` command's output.
     ///
     /// `configStore.onChange` is chained rather than replaced: a handler set before
     /// this call keeps being called first. One set after it replaces the launcher's.
-    public static func start(
-        configStore: ConfigStore, commands: [BuiltInCommand], insert: @escaping @MainActor (String) -> Void
-    ) {
+    public static func start(configStore: ConfigStore, commands: [BuiltInCommand], insert: @escaping InsertText) {
         guard controller == nil else { return }
         let controller = LauncherController(config: configStore.current, builtIns: commands, insert: insert)
         self.controller = controller

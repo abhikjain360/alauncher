@@ -9,6 +9,7 @@ import Testing
 final class RecordingSink: ScriptOutputSink {
     var flashes: [(text: String, isError: Bool)] = []
     var outputs: [(title: String, body: String)] = []
+    var typed: [(text: String, targetPID: pid_t?)] = []
 
     func flash(_ text: String, isError: Bool) {
         flashes.append((text, isError))
@@ -16,6 +17,10 @@ final class RecordingSink: ScriptOutputSink {
 
     func showOutput(title: String, body: String) {
         outputs.append((title, body))
+    }
+
+    func type(_ text: String, targetPID: pid_t?) {
+        typed.append((text, targetPID))
     }
 }
 
@@ -198,5 +203,91 @@ struct ScriptRunnerTests {
         let result = await task.value
         #expect(result.stdout == "ok\n")
         #expect(runner.runningCount == 0)
+    }
+
+    private func capture(_ runner: ScriptRunner, _ invocation: ScriptInvocation, arguments: [String] = []) async -> ScriptRunResult {
+        await withCheckedContinuation { continuation in
+            _ = runner.capture(invocation, arguments: arguments) { continuation.resume(returning: $0) }
+        }
+    }
+
+    @Test(#"`mode = "type"` types stdout without its last newline into the target; a failure never shows stdout"#)
+    func typeMode() async throws {
+        var secret = ScriptInvocation(command: CommandSettings(title: "Secret", run: "printf 'hunter2\\n'", mode: "type"))
+        secret.targetPID = 4242
+        await runner().run(secret)
+        #expect(sink.typed.map(\.text) == ["hunter2"])
+        #expect(sink.typed.map(\.targetPID) == [4242])
+        #expect(sink.flashes.isEmpty)
+
+        await runner().run(ScriptInvocation(command: CommandSettings(title: "Broken", run: "echo hunter2; exit 3", mode: "type")))
+        #expect(sink.flashes.map(\.text) == ["Broken failed (exit 3)"])
+        #expect(sink.flashes.last?.isError == true)
+
+        await runner().run(ScriptInvocation(command: CommandSettings(title: "Quiet", run: "true", mode: "type")))
+        #expect(sink.typed.count == 1)
+        #expect(sink.flashes.count == 1)
+        #expect(sink.outputs.isEmpty)
+    }
+
+    @Test("a choices run hands back all of stdout, arguments included, and flags more than the cap")
+    func captureWhole() async throws {
+        let flood = "i=0; while [ $i -lt 3000 ]; do echo \"item $i xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx\"; i=$((i+1)); done"
+        let big = ScriptInvocation(command: CommandSettings(title: "Big", run: flood, choices: true))
+        let result = await capture(runner(), big)
+        #expect(!result.stdoutTruncated)
+        #expect(result.stdout.utf8.count > ScriptRunner.outputCap)
+        #expect(result.stdout.hasPrefix("item 0 "))
+        #expect(result.stdout.split(separator: "\n").count == 3000)
+
+        let small = ScriptRunner(sink: sink, extraPath: [], wholeOutputCap: 1_000, log: { _ in })
+        let over = await capture(small, big)
+        #expect(over.stdoutTruncated)
+        #expect(over.stdout.isEmpty)
+
+        let echo = ScriptInvocation(command: CommandSettings(title: "Echo", run: "echo \"[$1] [$2]\"", choices: true))
+        #expect(await capture(runner(), echo, arguments: ["field:a b", "x"]).stdout == "[field:a b] [x]\n")
+        #expect(sink.flashes.isEmpty)
+        #expect(sink.outputs.isEmpty)
+    }
+
+    @Test("cancelling a choices run terminates it, and its result never arrives")
+    func captureCancel() async throws {
+        let runner = runner()
+        var delivered = false
+        let slow = ScriptInvocation(command: CommandSettings(title: "Slow", run: "sleep 5; echo late", choices: true))
+        let cancel = runner.capture(slow, arguments: []) { _ in delivered = true }
+        var waited = 0
+        while runner.runningCount == 0, waited < 100 {
+            try await Task.sleep(nanoseconds: 10_000_000)
+            waited += 1
+        }
+        #expect(runner.runningCount == 1)
+
+        let start = Date()
+        cancel()
+        waited = 0
+        while runner.runningCount > 0, waited < 300 {
+            try await Task.sleep(nanoseconds: 10_000_000)
+            waited += 1
+        }
+        #expect(runner.runningCount == 0)
+        #expect(Date().timeIntervalSince(start) < 3)
+        #expect(!delivered)
+    }
+
+    @Test("a final text shows per mode: flashed, in the panel, or typed exactly as given")
+    func deliverFinal() {
+        let runner = runner()
+        runner.deliver("one\ntwo", for: ScriptInvocation(command: CommandSettings(title: "Pill", run: "", mode: "compact")))
+        runner.deliver("report", for: ScriptInvocation(command: CommandSettings(title: "Panel", run: "", mode: "fullOutput")))
+        var typed = ScriptInvocation(command: CommandSettings(title: "Type", run: "", mode: "type"))
+        typed.targetPID = 7
+        runner.deliver("pass word\n", for: typed)
+        runner.deliver("", for: typed)
+        #expect(sink.flashes.map(\.text) == ["two"])
+        #expect(sink.outputs.map(\.body) == ["report"])
+        #expect(sink.typed.map(\.text) == ["pass word\n"])
+        #expect(sink.typed.map(\.targetPID) == [7])
     }
 }

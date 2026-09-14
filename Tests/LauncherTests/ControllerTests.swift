@@ -62,6 +62,12 @@ final class FakePanel: LauncherPanelHost {
 @MainActor
 final class EffectLog {
     var events: [String] = []
+    /// What `frontmostPID` answers.
+    var frontmostPID: pid_t? = 4242
+    /// The last plain run, for its mode and target.
+    var lastRun: ScriptInvocation?
+    /// Choices runs, oldest first. `finish` ends the latest.
+    var captures: [(title: String, arguments: [String], completion: @MainActor (ScriptRunResult) -> Void)] = []
 
     var effects: LauncherEffects {
         LauncherEffects(
@@ -69,14 +75,32 @@ final class EffectLog {
             reveal: { self.events.append("reveal \($0)") },
             copy: { self.events.append("copy \($0)") },
             flash: { text, isError in self.events.append(isError ? "flash error \(text)" : "flash \(text)") },
-            run: { invocation, arguments in self.events.append("run \(invocation.title) \(arguments)") },
+            run: { invocation, arguments in
+                self.lastRun = invocation
+                self.events.append("run \(invocation.title) \(arguments)")
+            },
             recordLaunch: { store, id in
                 store.recordLaunch(of: id)
                 self.events.append("record \(id)")
             },
             beep: { self.events.append("beep") },
-            insert: { self.events.append("insert \($0)") }
+            insert: { text, targetPID, _ in self.events.append("insert \(text)" + (targetPID.map { " → \($0)" } ?? "")) },
+            frontmostPID: { self.frontmostPID },
+            capture: { invocation, arguments, completion in
+                self.events.append("capture \(invocation.title) \(arguments)")
+                self.captures.append((invocation.title, arguments, completion))
+                return { self.events.append("cancel \(invocation.title)") }
+            },
+            deliver: { invocation, text in
+                let mode = invocation.typesOutput ? "type" : invocation.mode.rawValue
+                self.events.append("deliver \(mode) \(text)" + (invocation.targetPID.map { " → \($0)" } ?? ""))
+            }
         )
+    }
+
+    /// Ends the latest choices run with this output.
+    func finish(_ stdout: String = "", stderr: String = "", exitCode: Int32 = 0) {
+        captures.last?.completion(ScriptRunResult(exitCode: exitCode, stdout: stdout, stderr: stderr))
     }
 }
 

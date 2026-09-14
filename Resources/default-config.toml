@@ -53,8 +53,14 @@ max_age = 10000                         # zoxide's _ZO_MAXAGE
 # [[launcher.commands]]
 # title = "Lock screen"
 # run = "pmset displaysleepnow"
-# mode = "silent"                       # silent | compact | fullOutput
+# mode = "silent"                       # silent | compact | fullOutput | type (types the output into the app you were in)
 # aliases = ["lock"]
+# choices = false                       # true: a picker, over as many rounds as the command likes
+#
+# With choices = true, every run prints one JSON object. {"id": "…", "items": [...]}
+# lists items to pick from, each a string or {"title", "subtitle", "value"}; picking one
+# runs the command again with the id as $1 and the value as $2. {"final": "text"} ends
+# it, and mode says what happens to the text. Empty output ends it quietly.
 
 [calculator]
 enabled = true

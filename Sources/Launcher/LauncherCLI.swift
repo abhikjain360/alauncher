@@ -121,6 +121,7 @@ public enum LauncherCLI {
             var line = "\(item.id)\t\(item.title)"
             if !item.aliases.isEmpty { line += "\taliases: \(item.aliases.joined(separator: ", "))" }
             if let count = item.argumentCount { line += "\targs: \(count > 0 ? String(count) : "inline")" }
+            if case .command(let command)? = catalog.entry(for: item.id)?.action, command.choices { line += "\tchoices" }
             context.out(line)
         }
         let counts = Dictionary(grouping: catalog.items, by: \.kind).mapValues(\.count)
@@ -152,6 +153,8 @@ public enum LauncherCLI {
             return line
         case .choice(let choice):
             return "  \(choice.title)"
+        case .pick:
+            return "  \(row.title)"
         case .emoji(let match):
             let line = String(format: "%8.1f", match.score) + "  emoji    \(match.entry.emoji) \(row.title)"
             return match.matchedKeyword.map { line + "  (\($0))" } ?? line

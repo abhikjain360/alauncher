@@ -15,6 +15,8 @@ struct LauncherRow: Sendable {
         case choice(ScriptCommand.Argument.Choice)
         /// An emoji, in emoji search (`emoji <text>`). Enter types it.
         case emoji(EmojiMatch)
+        /// An item of a choices command's round, by its index in the round. Enter picks it.
+        case pick(Int)
     }
 
     var content: Content
@@ -35,6 +37,7 @@ struct LauncherRow: Sendable {
         case .item(let ranked): return ranked.item.id
         case .choice(let choice): return "choice:\(choice.value)"
         case .emoji(let match): return EmojiIndex.frecencyID(for: match.entry.emoji)
+        case .pick(let index): return "pick:\(index)"
         }
     }
 
@@ -188,6 +191,28 @@ struct ResultBuilder {
                 title: choice.title,
                 titlePositions: match.positions,
                 subtitle: nil,
+                hint: "",
+                icon: nil,
+                isEnabled: true
+            )
+        }
+    }
+
+    /// A choices round's items, fuzzy-filtered by what's typed, best first; all of them, in
+    /// order, when nothing is.
+    static func pickRows(_ round: ChoicesRound, query: String, limit: Int) -> [LauncherRow] {
+        let limit = max(0, limit)
+        let trimmed = query.trimmingCharacters(in: .whitespacesAndNewlines)
+        let matches: [(index: Int, match: FuzzyMatch)] = trimmed.isEmpty
+            ? round.items.indices.prefix(limit).map { (index: $0, match: FuzzyMatch(score: 0, positions: [])) }
+            : round.titles.best(trimmed, limit: limit)
+        return matches.map { found in
+            let item = round.items[found.index]
+            return LauncherRow(
+                content: .pick(found.index),
+                title: item.title,
+                titlePositions: found.match.positions,
+                subtitle: item.subtitle,
                 hint: "",
                 icon: nil,
                 isEnabled: true

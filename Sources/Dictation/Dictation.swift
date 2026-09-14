@@ -50,17 +50,23 @@ public enum Dictation {
         controller.retryLastDictation()
     }
 
-    /// Types `text` into the frontmost app the way dictation does, for the launcher's emoji.
-    /// Without permission to post key events it goes on the clipboard instead.
-    public static func insert(_ text: String, settings: InsertSettings) {
+    /// Types `text` the way dictation does, for the launcher: into `targetPID`'s app, which must
+    /// still be frontmost, or into whatever app is frontmost when nil. Without permission to post
+    /// key events, `copyIfNoPermission` puts it on the clipboard instead (a picked emoji);
+    /// otherwise it only says so, since command output may be a secret.
+    public static func insert(_ text: String, targetPID: pid_t?, settings: InsertSettings, copyIfNoPermission: Bool) {
         guard Inserter.shared.canPostEvents else {
+            guard copyIfNoPermission else {
+                OverlayPill.shared.flash("can't type: alauncher needs Accessibility", isError: true)
+                return
+            }
             NSPasteboard.general.clearContents()
             NSPasteboard.general.setString(text, forType: .string)
             OverlayPill.shared.flash("copied (no permission to type)")
             return
         }
         Task {
-            let result = await Inserter.shared.insert(text, targetPID: nil, settings: settings)
+            let result = await Inserter.shared.insert(text, targetPID: targetPID, settings: settings)
             guard let aborted = result.aborted else { return }
             Log.main("insert: \(text.count) chars from the launcher not inserted (\(aborted.rawValue))")
             OverlayPill.shared.flash("not inserted", isError: true)

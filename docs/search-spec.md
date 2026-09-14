@@ -52,6 +52,12 @@ public struct SearchItem: Hashable, Sendable {
 **Positions**
 - `positions` are the `Character` offsets of the chosen match in the original candidate, used for highlighting.
 
+## Fuzzy lists: `FuzzyList`
+
+- `FuzzyList(_ titles:)` prepares a fixed list of titles once. `matches(_ query:)` returns every title that matches, by index and in list order, scored exactly as `FuzzyMatcher.match` scores it.
+- An empty query matches none.
+- The launcher filters a choices command's items with it on every keystroke; 5,000 items must take well under 5 ms in a release build.
+
 ## Keywords and aliases
 
 **Keywords**

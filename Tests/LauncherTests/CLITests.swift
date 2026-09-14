@@ -93,6 +93,17 @@ struct CLITests {
         #expect(output.err.last?.hasPrefix("# 8 items (4 apps, 2 scripts, 2 commands), scanned in") == true)
     }
 
+    @Test("index marks choices commands")
+    func indexMarksChoices() {
+        let output = Output()
+        let vault = CommandSettings(title: "Vault", run: "vault-pick", mode: "type", aliases: ["vault"], choices: true)
+        let catalog = CatalogBuilder.build(apps: [], scripts: [], commands: [vault], builtIns: [], settings: LauncherSettings())
+        var context = context(output)
+        context.catalog = { catalog }
+        #expect(LauncherCLI.run(["index"], context: context) == 0)
+        #expect(output.out.contains("command:Vault\tVault\taliases: vault\targs: inline\tchoices"))
+    }
+
     @Test("an unknown or missing subcommand prints usage")
     func usage() {
         for arguments in [["frobnicate"], []] {

@@ -71,14 +71,18 @@ public struct RankingSettings: Equatable, Sendable {
 public struct CommandSettings: Equatable, Sendable {
     public var title: String
     public var run: String
+    /// silent | compact | fullOutput | type (types the output into the app you were in).
     public var mode = "silent"
     public var aliases: [String] = []
+    /// Each run prints a JSON list to pick from, or the final text; see default-config.toml.
+    public var choices = false
 
-    public init(title: String, run: String, mode: String = "silent", aliases: [String] = []) {
+    public init(title: String, run: String, mode: String = "silent", aliases: [String] = [], choices: Bool = false) {
         self.title = title
         self.run = run
         self.mode = mode
         self.aliases = aliases
+        self.choices = choices
     }
 }
 

@@ -80,7 +80,7 @@ enum ConfigParsing {
                 for index in 0..<commands.count {
                     let command = try commands.table(atIndex: index)
                     let path = "launcher.commands[\(index)]"
-                    try validateKeys(command, allowed: ["title", "run", "mode", "aliases"], path: path)
+                    try validateKeys(command, allowed: ["title", "run", "mode", "aliases", "choices"], path: path)
                 }
             }
         }
@@ -300,13 +300,14 @@ enum ConfigParsing {
             let title = try requiredString(table, key: "title", path: "\(path).title")
             let run = try requiredString(table, key: "run", path: "\(path).run")
             let mode = try optionalString(table, key: "mode", path: "\(path).mode") ?? "silent"
-            guard ["silent", "compact", "fullOutput"].contains(mode) else {
-                throw ConfigError("\(path).mode: invalid value (expected silent, compact, or fullOutput)")
+            guard ["silent", "compact", "fullOutput", "type"].contains(mode) else {
+                throw ConfigError("\(path).mode: invalid value (expected silent, compact, fullOutput, or type)")
             }
             let aliases = table.contains(key: "aliases")
                 ? try stringArray(table, key: "aliases", path: "\(path).aliases")
                 : []
-            commands.append(CommandSettings(title: title, run: run, mode: mode, aliases: aliases))
+            let choices = try optionalBool(table, key: "choices", path: "\(path).choices") ?? false
+            commands.append(CommandSettings(title: title, run: run, mode: mode, aliases: aliases, choices: choices))
         }
         return commands
     }

@@ -3,16 +3,25 @@ import Foundation
 import Overlay
 import Search
 
-/// Where script output goes: the pill and `TextPanel` in the app, a recorder in tests.
+/// Where script output goes: the pill, `TextPanel` and typing in the app, a recorder in tests.
 @MainActor
 protocol ScriptOutputSink: AnyObject {
     func flash(_ text: String, isError: Bool)
     func showOutput(title: String, body: String)
+    /// `mode = "type"`: types the text into `targetPID`'s app.
+    func type(_ text: String, targetPID: pid_t?)
 }
 
-/// The app's sink: `OverlayPill` for one line, `TextPanel` for full output.
+/// The app's sink: `OverlayPill` for one line, `TextPanel` for full output, and the insert
+/// path for typed output.
 @MainActor
 final class OverlayOutputSink: ScriptOutputSink {
+    private let insert: InsertText
+
+    init(insert: @escaping InsertText) {
+        self.insert = insert
+    }
+
     func flash(_ text: String, isError: Bool) {
         OverlayPill.shared.flash(text, isError: isError)
     }
@@ -21,6 +30,11 @@ final class OverlayOutputSink: ScriptOutputSink {
         let panel = TextPanel.shared
         panel.onEnter = nil
         panel.show(entries: [TextPanel.Entry(heading: title, body: body)], hint: "⌘C copy · esc close")
+    }
+
+    /// Command output may be a secret, so it never falls back to the clipboard.
+    func type(_ text: String, targetPID: pid_t?) {
+        insert(text, targetPID, false)
     }
 }
 
@@ -36,6 +50,11 @@ struct ScriptInvocation: Sendable {
     var title: String
     var program: Program
     var mode: ScriptCommand.Mode
+    /// `mode = "type"`, for config commands: the output is typed into `targetPID`'s app. A
+    /// failure flashes as in silent mode, but never with stdout, which may be a secret.
+    var typesOutput = false
+    /// The app that was frontmost when Enter was pressed, where typed output goes.
+    var targetPID: pid_t?
     /// Nil: the script's own folder, or the home folder for a command.
     var currentDirectory: String?
     /// By position: whether to percent-encode that argument.
@@ -61,7 +80,13 @@ struct ScriptInvocation: Sendable {
     }
 
     init(command: CommandSettings) {
-        self.init(title: command.title, program: .shell(command.run), mode: ScriptCommand.Mode(rawValue: command.mode) ?? .silent)
+        let typesOutput = command.mode == "type"
+        self.init(
+            title: command.title,
+            program: .shell(command.run),
+            mode: typesOutput ? .silent : ScriptCommand.Mode(rawValue: command.mode) ?? .silent
+        )
+        self.typesOutput = typesOutput
     }
 }
 
@@ -70,7 +95,8 @@ struct ScriptRunResult: Equatable, Sendable {
     var exitCode: Int32
     var stdout: String
     var stderr: String
-    /// More than the cap was written; the text holds the end of the output.
+    /// More than the cap was written; the text holds the end of the output, or, for output
+    /// kept whole, nothing.
     var stdoutTruncated = false
     var stderrTruncated = false
     /// The program couldn't start; `stderr` says why.
@@ -83,10 +109,13 @@ struct ScriptRunResult: Equatable, Sendable {
 @MainActor
 final class ScriptRunner {
     static let outputCap = 64 * 1024
+    /// Choices runs and `mode = "type"` need all of stdout; more than this is an error.
+    nonisolated static let wholeOutputCap = 16 << 20
 
     var extraPath: [String]
     private let sink: ScriptOutputSink
     private let environment: [String: String]
+    private let wholeCap: Int
     private let log: @Sendable (String) -> Void
     private var running: [ObjectIdentifier: ProcessCapture] = [:]
 
@@ -94,11 +123,13 @@ final class ScriptRunner {
         sink: ScriptOutputSink,
         extraPath: [String],
         environment: [String: String] = ProcessInfo.processInfo.environment,
+        wholeOutputCap: Int = ScriptRunner.wholeOutputCap,
         log: @escaping @Sendable (String) -> Void = { Log.main($0) }
     ) {
         self.sink = sink
         self.extraPath = extraPath
         self.environment = environment
+        wholeCap = wholeOutputCap
         self.log = log
     }
 
@@ -108,24 +139,53 @@ final class ScriptRunner {
     /// this; tests do.
     @discardableResult
     func run(_ invocation: ScriptInvocation, arguments: [String] = []) async -> ScriptRunResult {
-        let launch = launchSpec(for: invocation, arguments: arguments)
-        let capture = ProcessCapture(launch: launch, cap: Self.outputCap)
-        let key = ObjectIdentifier(capture)
-        running[key] = capture
-        let started = Date()
-        let result = await capture.run()
-        running[key] = nil
-
-        let milliseconds = Int(Date().timeIntervalSince(started) * 1000)
-        log("launcher: \(invocation.title) exited \(result.exitCode) after \(milliseconds) ms, stdout \(result.stdout.utf8.count) B, stderr \(result.stderr.utf8.count) B")
+        let capture = makeCapture(invocation, arguments: arguments, keepsWholeStdout: invocation.typesOutput)
+        let result = await finish(capture, title: invocation.title)
         present(result, for: invocation)
         return result
+    }
+
+    /// A choices run: all of stdout, up to `wholeOutputCap`, goes to `completion` rather than
+    /// being shown. The returned cancel terminates the process and drops its result.
+    func capture(
+        _ invocation: ScriptInvocation,
+        arguments: [String],
+        completion: @escaping @MainActor (ScriptRunResult) -> Void
+    ) -> @MainActor () -> Void {
+        let capture = makeCapture(invocation, arguments: arguments, keepsWholeStdout: true)
+        let cancellation = Cancellation()
+        Task {
+            let result = await finish(capture, title: invocation.title)
+            if !cancellation.isCancelled { completion(result) }
+        }
+        return {
+            cancellation.isCancelled = true
+            capture.terminate()
+        }
     }
 
     /// Sends SIGTERM to every running script.
     func terminateAll() {
         for capture in running.values {
             capture.terminate()
+        }
+    }
+
+    /// Shows or types a result's text per the invocation's mode: a choices command's final
+    /// text, or a `mode = "type"` command's output. Empty text shows nothing.
+    func deliver(_ text: String, for invocation: ScriptInvocation) {
+        guard !text.isEmpty else { return }
+        if invocation.typesOutput {
+            sink.type(text, targetPID: invocation.targetPID)
+            return
+        }
+        switch invocation.mode {
+        case .fullOutput:
+            sink.showOutput(title: invocation.title, body: text)
+        case .silent, .compact, .inline:
+            if let line = Self.lastLine(of: text) {
+                sink.flash(Self.pillText(line), isError: false)
+            }
         }
     }
 
@@ -173,7 +233,38 @@ final class ScriptRunner {
         return value.addingPercentEncoding(withAllowedCharacters: allowed) ?? value
     }
 
+    private func makeCapture(_ invocation: ScriptInvocation, arguments: [String], keepsWholeStdout: Bool) -> ProcessCapture {
+        ProcessCapture(
+            launch: launchSpec(for: invocation, arguments: arguments),
+            cap: Self.outputCap,
+            wholeStdoutCap: keepsWholeStdout ? wholeCap : nil
+        )
+    }
+
+    /// Runs `capture` to the end, tracked meanwhile. Logs sizes and timing, never output.
+    private func finish(_ capture: ProcessCapture, title: String) async -> ScriptRunResult {
+        let key = ObjectIdentifier(capture)
+        running[key] = capture
+        let started = Date()
+        let result = await capture.run()
+        running[key] = nil
+
+        let milliseconds = Int(Date().timeIntervalSince(started) * 1000)
+        log("launcher: \(title) exited \(result.exitCode) after \(milliseconds) ms, stdout \(result.stdout.utf8.count) B, stderr \(result.stderr.utf8.count) B")
+        return result
+    }
+
     private func present(_ result: ScriptRunResult, for invocation: ScriptInvocation) {
+        if invocation.typesOutput {
+            if result.exitCode != 0 {
+                sink.flash(Self.pillText(Self.failureText(result, title: invocation.title, showsStdout: false)), isError: true)
+            } else if result.stdoutTruncated {
+                sink.flash("\(invocation.title): output too large", isError: true)
+            } else {
+                deliver(Self.droppingTrailingNewline(result.stdout), for: invocation)
+            }
+            return
+        }
         switch invocation.mode {
         case .fullOutput:
             sink.showOutput(title: invocation.title, body: Self.fullOutputBody(result))
@@ -183,12 +274,23 @@ final class ScriptRunner {
                     sink.flash(Self.pillText(line), isError: false)
                 }
             } else {
-                let line = Self.lastLine(of: result.stderr)
-                    ?? Self.lastLine(of: result.stdout)
-                    ?? "\(invocation.title) failed (exit \(result.exitCode))"
-                sink.flash(Self.pillText(line), isError: true)
+                sink.flash(Self.pillText(Self.failureText(result, title: invocation.title, showsStdout: true)), isError: true)
             }
         }
+    }
+
+    /// What a failed run flashes: its last stderr line; else its last stdout line, when stdout
+    /// may be shown; else its exit status.
+    static func failureText(_ result: ScriptRunResult, title: String, showsStdout: Bool) -> String {
+        lastLine(of: result.stderr)
+            ?? (showsStdout ? lastLine(of: result.stdout) : nil)
+            ?? "\(title) failed (exit \(result.exitCode))"
+    }
+
+    /// A command's output as typed: without the newline that ends it.
+    static func droppingTrailingNewline(_ text: String) -> String {
+        // "\r\n" is one Character, so `dropLast` takes all of it.
+        text.hasSuffix("\n") || text.hasSuffix("\r\n") ? String(text.dropLast()) : text
     }
 
     static func lastLine(of text: String) -> String? {
@@ -217,6 +319,12 @@ final class ScriptRunner {
     }
 }
 
+/// Set when a choices run is cancelled, so that its late result is dropped.
+@MainActor
+private final class Cancellation {
+    var isCancelled = false
+}
+
 /// One running process and its captured output. Spawning, reading and waiting all
 /// happen on background queues.
 final class ProcessCapture: @unchecked Sendable {
@@ -239,15 +347,20 @@ final class ProcessCapture: @unchecked Sendable {
     private let lock = NSLock()
     private var process: Process?
     private var handles: [FileHandle] = []
-    private var buffers: [TailBuffer]
+    private var buffers: [OutputBuffer]
     private var closedStreams: Set<Int> = []
     private var exited = false
     private var finished = false
     private var continuation: CheckedContinuation<ScriptRunResult, Never>?
 
-    init(launch: Launch, cap: Int) {
+    /// `cap` bounds the tail kept of each stream. With `wholeStdoutCap`, stdout is kept whole
+    /// up to that size instead.
+    init(launch: Launch, cap: Int, wholeStdoutCap: Int? = nil) {
         self.launch = launch
-        buffers = [TailBuffer(cap: cap), TailBuffer(cap: cap)]
+        buffers = [
+            wholeStdoutCap.map { OutputBuffer(cap: $0, keepsWhole: true) } ?? OutputBuffer(cap: cap),
+            OutputBuffer(cap: cap),
+        ]
     }
 
     func run() async -> ScriptRunResult {
@@ -395,17 +508,30 @@ final class ProcessCapture: @unchecked Sendable {
     }
 }
 
-/// Keeps the last `cap` bytes of a stream, so the final line is always there.
-struct TailBuffer {
+/// A stream's captured output: its last `cap` bytes, so the final line is always there. Or,
+/// kept whole, all of it up to `cap`; past that it keeps nothing and only notes the overflow.
+struct OutputBuffer {
     let cap: Int
+    let keepsWhole: Bool
     private var data = Data()
     private var dropped = false
 
-    init(cap: Int) {
+    init(cap: Int, keepsWhole: Bool = false) {
         self.cap = cap
+        self.keepsWhole = keepsWhole
     }
 
     mutating func append(_ chunk: Data) {
+        if keepsWhole {
+            guard !dropped else { return }
+            if data.count + chunk.count > cap {
+                dropped = true
+                data = Data()
+            } else {
+                data.append(chunk)
+            }
+            return
+        }
         data.append(chunk)
         if data.count > cap * 2 {
             data = Data(data.suffix(cap))
@@ -415,6 +541,9 @@ struct TailBuffer {
 
     /// Lossy UTF-8. When the start was cut, the partial first line is dropped too.
     func text() -> (text: String, truncated: Bool) {
+        if keepsWhole {
+            return (String(decoding: data, as: UTF8.self), dropped)
+        }
         let truncated = dropped || data.count > cap
         var bytes = data.count > cap ? Data(data.suffix(cap)) : data
         if truncated, let newline = bytes.firstIndex(of: UInt8(ascii: "\n")) {

@@ -30,8 +30,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
         Dictation.start(configStore: configStore)
         let store: ConfigStore = configStore
-        Launcher.start(configStore: store, commands: builtInCommands()) { text in
-            Dictation.insert(text, settings: store.current.dictation.insert)
+        Launcher.start(configStore: store, commands: builtInCommands()) { text, targetPID, copyIfNoPermission in
+            Dictation.insert(text, targetPID: targetPID, settings: store.current.dictation.insert, copyIfNoPermission: copyIfNoPermission)
         }
     }
 

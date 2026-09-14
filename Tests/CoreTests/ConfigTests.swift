@@ -100,6 +100,30 @@ private func defaultFixture() throws -> String {
     #expect(config.dictation.insert.apps == ["com.example.App": .paste])
 }
 
+@Test func commandsTakeChoicesAndTypeMode() throws {
+    let config = try ConfigLoader.load(configText: """
+        [[launcher.commands]]
+        title = "pass"
+        run = "pass-pick"
+        mode = "type"
+        choices = true
+
+        [[launcher.commands]]
+        title = "Lock screen"
+        run = "pmset displaysleepnow"
+        """, secretsText: nil)
+    #expect(config.launcher.commands == [
+        CommandSettings(title: "pass", run: "pass-pick", mode: "type", choices: true),
+        CommandSettings(title: "Lock screen", run: "pmset displaysleepnow"),
+    ])
+
+    let command = "[[launcher.commands]]\ntitle = \"x\"\nrun = \"y\"\n"
+    #expect(configError(for: command + "mode = \"paste\"\n")?.description
+        == "launcher.commands[0].mode: invalid value (expected silent, compact, fullOutput, or type)")
+    #expect(configError(for: command + "choices = \"yes\"\n")?.description.hasPrefix("launcher.commands[0].choices") == true)
+    #expect(configError(for: command + "choice = true\n")?.description == "launcher.commands[0].choice: unknown key, did you mean choices?")
+}
+
 @Test func secretsAndApiKeyCommand() throws {
     var config = try ConfigLoader.load(configText: "", secretsText: "[cleanup]\napi_key = \"direct-secret\"\n")
     #expect(config.cleanup.apiKey == "direct-secret")
