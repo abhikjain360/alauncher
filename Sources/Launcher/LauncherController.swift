@@ -441,6 +441,7 @@ final class LauncherController {
 
         if let previousID, let index = rows.firstIndex(where: { $0.id == previousID && $0.isEnabled }) {
             selectedIndex = index
+            scrollOffset = Self.offset(showing: index, from: scrollOffset, of: rows.count, visible: rowLimit)
         } else {
             selectedIndex = rows.firstIndex(where: \.isEnabled)
             scrollOffset = 0
@@ -448,22 +449,33 @@ final class LauncherController {
         display()
     }
 
-    /// Shows the rows that fit on screen, scrolled far enough down to hold the selection.
+    /// Shows the rows the window is over. The selection is only highlighted while it is one of
+    /// them: scrolling can leave it behind, and ↑↓ fetch it back.
     private func display() {
         let limit = rowLimit
-        scrollOffset = Self.offset(showing: selectedIndex, from: scrollOffset, of: rows.count, visible: limit)
+        scrollOffset = Self.clamped(scrollOffset, of: rows.count, visible: limit)
         let onScreen = Array(rows[scrollOffset..<min(rows.count, scrollOffset + limit)])
         let hint = pendingConfirmationID
             .flatMap { id in rows.firstIndex { $0.id == id } }
             .map { (index: $0 - scrollOffset, text: Self.confirmationHint) }
         let scroll = onScreen.count < rows.count ? ScrollPosition(first: scrollOffset, total: rows.count) : nil
-        panel?.display(onScreen, selection: selectedIndex.map { $0 - scrollOffset }, hint: hint, scroll: scroll)
+        let selection = selectedIndex.flatMap { index -> Int? in
+            let position = index - scrollOffset
+            return onScreen.indices.contains(position) ? position : nil
+        }
+        panel?.display(onScreen, selection: selection, hint: hint, scroll: scroll)
     }
 
-    /// Scrolls the window of `visible` rows by as little as it takes to hold `selection`.
+    /// Keeps the window of `visible` rows inside a list of `count`.
+    static func clamped(_ offset: Int, of count: Int, visible: Int) -> Int {
+        guard visible > 0 else { return 0 }
+        return max(0, min(offset, count - visible))
+    }
+
+    /// Scrolls the window by as little as it takes to hold `selection`.
     static func offset(showing selection: Int?, from offset: Int, of count: Int, visible: Int) -> Int {
         guard visible > 0 else { return 0 }
-        var offset = min(offset, count - visible)
+        var offset = Self.clamped(offset, of: count, visible: visible)
         if let selection {
             offset = min(offset, selection)
             offset = max(offset, selection - visible + 1)
@@ -782,7 +794,9 @@ extension LauncherController: LauncherPanelDelegate {
         } while rows.indices.contains(index) && !rows[index].isEnabled
         guard rows.indices.contains(index) else { return }
         selectedIndex = index
-        let scrolls = Self.offset(showing: index, from: scrollOffset, of: rows.count, visible: rowLimit) != scrollOffset
+        let revealed = Self.offset(showing: index, from: scrollOffset, of: rows.count, visible: rowLimit)
+        let scrolls = revealed != scrollOffset
+        scrollOffset = revealed
         if pendingConfirmationID != nil, session == nil {
             pendingConfirmationID = nil
             display()
@@ -883,6 +897,15 @@ extension LauncherController: LauncherPanelDelegate {
 
     func panelHoveredRow(at index: Int) {
         _ = select(rowOnScreen: index)
+    }
+
+    /// The wheel scrolls the list alone: the selection stays on its row, off screen if that is
+    /// where scrolling leaves it, until ↑↓ move it or the mouse picks another row.
+    func panelScroll(by delta: Int) {
+        let offset = Self.clamped(scrollOffset + delta, of: rows.count, visible: rowLimit)
+        guard offset != scrollOffset else { return }
+        scrollOffset = offset
+        display()
     }
 
     /// Selects a row the panel shows, by its place on screen. False when there is none there.

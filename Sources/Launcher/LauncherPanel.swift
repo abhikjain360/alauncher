@@ -13,6 +13,8 @@ protocol LauncherPanelDelegate: AnyObject {
     func panelClickedRow(at index: Int)
     /// The mouse moved onto a row on screen.
     func panelHoveredRow(at index: Int)
+    /// The wheel or a two-finger scroll, in rows: positive scrolls further down the list.
+    func panelScroll(by delta: Int)
     /// ⌘C with no text selected in the field. True when the controller copied something.
     func panelCopySelection() -> Bool
 }
@@ -59,7 +61,7 @@ final class LauncherPanel: NSPanel, NSWindowDelegate, NSTextFieldDelegate {
     /// Where the pointer was when the rows were last shown. A list that changes under a still
     /// pointer must not move the selection, and only a real move changes this.
     private var mouseWhenShown = NSPoint.zero
-    /// Scroll travel not yet worth a row.
+    /// Precise scroll travel not yet worth a row.
     private var scrolled: CGFloat = 0
 
     init(icons: IconCache) {
@@ -374,18 +376,32 @@ final class LauncherPanel: NSPanel, NSWindowDelegate, NSTextFieldDelegate {
         return true
     }
 
-    /// A wheel or two-finger scroll moves the selection, which scrolls the list. The rows are
-    /// plain views the panel lays out itself, so there is no scroll view to take the event.
+    /// A wheel or two-finger scroll scrolls the list. The rows are plain views the panel lays
+    /// out itself, so there is no scroll view to take the event.
     override func scrollWheel(with event: NSEvent) {
-        if event.phase == .began { scrolled = 0 }
-        scrolled += event.hasPreciseScrollingDeltas ? event.scrollingDeltaY : event.scrollingDeltaY * ResultRowView.height
-        let rows = Int(scrolled / ResultRowView.height)
-        guard rows != 0 else { return }
-        scrolled -= CGFloat(rows) * ResultRowView.height
+        let step = Self.scrollStep(
+            deltaY: event.scrollingDeltaY,
+            precise: event.hasPreciseScrollingDeltas,
+            began: event.phase == .began,
+            accumulated: &scrolled
+        )
+        guard step != 0 else { return }
+        launcherDelegate?.panelScroll(by: step)
+    }
+
+    /// How far one scroll event moves the list: one row, never more, so that neither a spun
+    /// wheel nor a flicked trackpad skips rows. A wheel's line count is ignored, since it grows
+    /// with how fast the wheel turns; precise deltas add up until they are worth a row.
+    static func scrollStep(deltaY: CGFloat, precise: Bool, began: Bool, accumulated: inout CGFloat) -> Int {
+        if began { accumulated = 0 }
+        guard deltaY != 0 else { return 0 }
         // Scrolling up, towards the top of the list, is a negative move.
-        for _ in 0..<abs(rows) {
-            launcherDelegate?.panelMoveSelection(by: rows > 0 ? -1 : 1)
-        }
+        guard precise else { return deltaY > 0 ? -1 : 1 }
+        accumulated += deltaY
+        guard abs(accumulated) >= ResultRowView.height / 2 else { return 0 }
+        let step = accumulated > 0 ? -1 : 1
+        accumulated = 0
+        return step
     }
 
     func windowDidResignKey(_ notification: Notification) {

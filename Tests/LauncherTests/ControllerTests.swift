@@ -227,18 +227,34 @@ struct ControllerTests {
         #expect(panel.selection == 0)
     }
 
-    @Test("the scroll indicator's thumb is the visible share of the track, and slides to its foot")
-    func scrollThumb() {
-        let track: CGFloat = 100
-        // Half the list on screen: half the track, at the top, then at the foot.
-        #expect(ScrollPosition(first: 0, total: 10).thumb(shown: 5, in: track, minimum: 10) == (0, 50))
-        #expect(ScrollPosition(first: 5, total: 10).thumb(shown: 5, in: track, minimum: 10) == (50, 50))
-        // A long list keeps a thumb you can see, and it still walks the whole track.
-        let middle = ScrollPosition(first: 3, total: 11).thumb(shown: 1, in: track, minimum: 10)
-        #expect(middle == (27, 10))
-        #expect(ScrollPosition(first: 10, total: 11).thumb(shown: 1, in: track, minimum: 10) == (90, 10))
-        // Nothing to scroll: the thumb is the whole track.
-        #expect(ScrollPosition(first: 0, total: 3).thumb(shown: 3, in: track, minimum: 10) == (0, 100))
+    @Test("the wheel scrolls the list alone, leaving the selection behind until ↑↓ fetch it")
+    func wheelScrollsTheList() async {
+        panel.rowCapacity = 2
+        let controller = await makeController()
+        panel.type("c")
+        let onScreen = panel.titles
+        #expect(panel.selection == 0)
+        let total = panel.scroll?.total ?? 0
+        #expect(total > 2)
+
+        controller.panelScroll(by: 1)
+        #expect(panel.titles.first == onScreen.last)
+        #expect(panel.scroll?.first == 1)
+        // The selected row is above the window now, so no row is highlighted.
+        #expect(panel.selection == nil)
+
+        // ↓ moves the selection from where it was and brings it back on screen.
+        controller.panelMoveSelection(by: 1)
+        #expect(panel.selectedTitle == onScreen.last)
+        #expect(panel.scroll?.first == 1)
+        #expect(panel.selection == 0)
+
+        // Scrolling holds at both ends.
+        controller.panelScroll(by: total)
+        #expect(panel.scroll?.first == total - 2)
+        controller.panelScroll(by: -total)
+        #expect(panel.scroll?.first == 0)
+        #expect(panel.titles == onScreen)
     }
 
     @Test("the mouse moving over a row selects it; a row that isn't there is ignored")
