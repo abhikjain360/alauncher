@@ -14,7 +14,7 @@ protocol LauncherPanelHost: AnyObject {
     var rowCapacity: Int { get }
     func setText(_ text: String)
     func setArgumentMode(title: String?, placeholder: String?, secure: Bool)
-    func display(_ rows: [LauncherRow], selection: Int?, hint: (index: Int, text: String)?)
+    func display(_ rows: [LauncherRow], selection: Int?, hint: (index: Int, text: String)?, scroll: ScrollPosition?)
     func select(_ index: Int?)
     /// Picks the screen under the mouse for the next `present()`, so `rowCapacity` counts
     /// that screen's rows.
@@ -456,7 +456,8 @@ final class LauncherController {
         let hint = pendingConfirmationID
             .flatMap { id in rows.firstIndex { $0.id == id } }
             .map { (index: $0 - scrollOffset, text: Self.confirmationHint) }
-        panel?.display(onScreen, selection: selectedIndex.map { $0 - scrollOffset }, hint: hint)
+        let scroll = onScreen.count < rows.count ? ScrollPosition(first: scrollOffset, total: rows.count) : nil
+        panel?.display(onScreen, selection: selectedIndex.map { $0 - scrollOffset }, hint: hint, scroll: scroll)
     }
 
     /// Scrolls the window of `visible` rows by as little as it takes to hold `selection`.
@@ -876,10 +877,29 @@ extension LauncherController: LauncherPanelDelegate {
 
     /// `index` counts the rows on screen, so the rows scrolled past come before it.
     func panelClickedRow(at index: Int) {
-        let index = scrollOffset + index
-        guard rows.indices.contains(index), rows[index].isEnabled else { return }
-        selectedIndex = index
+        guard select(rowOnScreen: index) else { return }
         panelActivate()
+    }
+
+    func panelHoveredRow(at index: Int) {
+        _ = select(rowOnScreen: index)
+    }
+
+    /// Selects a row the panel shows, by its place on screen. False when there is none there.
+    @discardableResult
+    private func select(rowOnScreen index: Int) -> Bool {
+        let index = scrollOffset + index
+        guard rows.indices.contains(index), rows[index].isEnabled else { return false }
+        guard index != selectedIndex else { return true }
+        selectedIndex = index
+        // The hint belongs to the row it was shown on, as it does when ↑↓ move the selection.
+        if pendingConfirmationID != nil, session == nil {
+            pendingConfirmationID = nil
+            display()
+        } else {
+            panel?.select(index - scrollOffset)
+        }
+        return true
     }
 
     /// ⌘C on an emoji row copies the emoji and closes the panel.

@@ -9,6 +9,7 @@ final class ResultRowView: NSView {
     static let height: CGFloat = 44
 
     var onClick: (() -> Void)?
+    var onHover: (() -> Void)?
     var isSelected = false {
         didSet {
             if isSelected != oldValue { needsDisplay = true }
@@ -99,6 +100,22 @@ final class ResultRowView: NSView {
     /// The whole row takes the click, labels included.
     override func hitTest(_ point: NSPoint) -> NSView? {
         super.hitTest(point) == nil ? nil : self
+    }
+
+    /// `.activeAlways`, since the launcher's app is never the active one: a non-activating
+    /// panel gets no mouse-moved events, but tracking areas still fire.
+    override func updateTrackingAreas() {
+        super.updateTrackingAreas()
+        trackingAreas.forEach(removeTrackingArea)
+        addTrackingArea(NSTrackingArea(
+            rect: .zero,
+            options: [.mouseEnteredAndExited, .activeAlways, .inVisibleRect],
+            owner: self
+        ))
+    }
+
+    override func mouseEntered(with event: NSEvent) {
+        onHover?()
     }
 
     override func acceptsFirstMouse(for event: NSEvent?) -> Bool {

@@ -88,12 +88,20 @@ struct ChoicesControllerTests {
         openVault(controller)
         #expect(panel.titles == ["email/gmail", "work/vpn"])
 
+        #expect(panel.scroll == ScrollPosition(first: 0, total: 3))
+        // Filtered down to what fits, the indicator goes away; cleared, it is back.
+        panel.type("bank")
+        #expect(panel.scroll == nil)
+        panel.type("")
+        #expect(panel.scroll == ScrollPosition(first: 0, total: 3))
+
         controller.panelMoveSelection(by: 1)
         #expect(panel.titles == ["email/gmail", "work/vpn"])
         #expect(panel.selection == 1)
         controller.panelMoveSelection(by: 1)
         #expect(panel.titles == ["work/vpn", "Bank"])
         #expect(panel.selection == 1)
+        #expect(panel.scroll == ScrollPosition(first: 1, total: 3))
         // The end of the list holds.
         controller.panelMoveSelection(by: 1)
         #expect(panel.titles == ["work/vpn", "Bank"])

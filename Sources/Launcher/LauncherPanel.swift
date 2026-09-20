@@ -11,8 +11,27 @@ protocol LauncherPanelDelegate: AnyObject {
     func panelCancel()
     func panelDidResignKey()
     func panelClickedRow(at index: Int)
+    /// The mouse moved onto a row on screen.
+    func panelHoveredRow(at index: Int)
     /// ⌘C with no text selected in the field. True when the controller copied something.
     func panelCopySelection() -> Bool
+}
+
+/// Where the rows on screen sit in the whole list, for the scroll indicator.
+struct ScrollPosition: Equatable {
+    /// The index of the first row on screen.
+    var first: Int
+    /// How many rows the list holds in all.
+    var total: Int
+
+    /// The indicator's thumb in a track `height` tall: `shown` rows' share of the list, never
+    /// shorter than `minimum`, sliding down the rest of the track as `first` grows.
+    func thumb(shown: Int, in height: CGFloat, minimum: CGFloat) -> (top: CGFloat, height: CGFloat) {
+        guard shown > 0, total > shown else { return (0, height) }
+        let thumb = min(height, max(minimum, height * CGFloat(shown) / CGFloat(total)))
+        let progress = min(1, max(0, CGFloat(first) / CGFloat(total - shown)))
+        return (top: (height - thumb) * progress, height: thumb)
+    }
 }
 
 /// The launcher window: a borderless, non-activating panel with the search field
@@ -34,8 +53,12 @@ final class LauncherPanel: NSPanel, NSWindowDelegate, NSTextFieldDelegate {
     private var usesSecureField = false
     private let token = TokenView()
     private let separator = NSBox()
+    private let indicator = ScrollIndicator()
     private var rowViews: [ResultRowView] = []
     private var shownRows = 0
+    /// Where the pointer was when the rows were last shown. A list that changes under a still
+    /// pointer must not move the selection, and only a real move changes this.
+    private var mouseWhenShown = NSPoint.zero
     /// Scroll travel not yet worth a row.
     private var scrolled: CGFloat = 0
 
@@ -79,6 +102,8 @@ final class LauncherPanel: NSPanel, NSWindowDelegate, NSTextFieldDelegate {
         separator.boxType = .separator
         separator.isHidden = true
         container.addSubview(separator)
+        indicator.isHidden = true
+        container.addSubview(indicator)
         layoutField()
     }
 
@@ -197,8 +222,9 @@ final class LauncherPanel: NSPanel, NSWindowDelegate, NSTextFieldDelegate {
 
     // MARK: Rows
 
-    /// Shows `rows` and resizes the panel, keeping its top edge where it is.
-    func display(_ rows: [LauncherRow], selection: Int?, hint: (index: Int, text: String)? = nil) {
+    /// Shows `rows` and resizes the panel, keeping its top edge where it is. `scroll` says
+    /// where they sit in the list, and is nil when they are all of it.
+    func display(_ rows: [LauncherRow], selection: Int?, hint: (index: Int, text: String)? = nil, scroll: ScrollPosition? = nil) {
         for (index, row) in rows.enumerated() {
             let view = rowView(at: index)
             view.configure(row, hint: hint?.index == index ? hint?.text : nil)
@@ -225,9 +251,31 @@ final class LauncherPanel: NSPanel, NSWindowDelegate, NSTextFieldDelegate {
             view.isSelected = false
         }
         shownRows = rows.count
+        mouseWhenShown = NSEvent.mouseLocation
         separator.frame = NSRect(x: 0, y: Self.fieldHeight, width: Self.width, height: 1)
         separator.isHidden = rows.isEmpty
+        layoutIndicator(scroll)
         resize()
+    }
+
+    /// The indicator runs beside the rows, in the margin their text leaves free, and shows
+    /// nothing when the whole list is on screen.
+    private func layoutIndicator(_ scroll: ScrollPosition?) {
+        guard shownRows > 0, let scroll, scroll.total > shownRows else {
+            indicator.isHidden = true
+            return
+        }
+        let height = CGFloat(shownRows) * ResultRowView.height
+        indicator.isHidden = false
+        indicator.frame = NSRect(
+            // Beside the rows: their highlight stops 8 pt in from the panel's edge.
+            x: Self.width - 3 - ScrollIndicator.thickness,
+            y: Self.fieldHeight + 1 + Self.listPadding,
+            width: ScrollIndicator.thickness,
+            height: height
+        )
+        indicator.thumb = scroll.thumb(shown: shownRows, in: height, minimum: ScrollIndicator.minimumThumb)
+        indicator.needsDisplay = true
     }
 
     func select(_ index: Int?) {
@@ -256,6 +304,10 @@ final class LauncherPanel: NSPanel, NSWindowDelegate, NSTextFieldDelegate {
             let view = ResultRowView(frame: .zero)
             let position = rowViews.count
             view.onClick = { [weak self] in self?.launcherDelegate?.panelClickedRow(at: position) }
+            view.onHover = { [weak self] in
+                guard let self, NSEvent.mouseLocation != mouseWhenShown else { return }
+                launcherDelegate?.panelHoveredRow(at: position)
+            }
             container.addSubview(view)
             rowViews.append(view)
         }
@@ -396,5 +448,27 @@ private final class TokenView: NSView {
     override func draw(_ dirtyRect: NSRect) {
         NSColor.controlAccentColor.withAlphaComponent(0.22).setFill()
         NSBezierPath(roundedRect: bounds, xRadius: 7, yRadius: 7).fill()
+    }
+}
+
+/// A scroll indicator, not a scroller: it shows how far down a list the rows on screen are,
+/// and never takes a click, since the list scrolls with the selection.
+private final class ScrollIndicator: NSView {
+    static let thickness: CGFloat = 3
+    static let minimumThumb: CGFloat = 18
+
+    /// Measured from the top of the track, which is why the view is flipped.
+    var thumb: (top: CGFloat, height: CGFloat) = (0, 0)
+
+    override var isFlipped: Bool { true }
+
+    override func hitTest(_ point: NSPoint) -> NSView? {
+        return nil
+    }
+
+    override func draw(_ dirtyRect: NSRect) {
+        let rect = NSRect(x: 0, y: thumb.top, width: bounds.width, height: thumb.height)
+        NSColor.secondaryLabelColor.setFill()
+        NSBezierPath(roundedRect: rect, xRadius: bounds.width / 2, yRadius: bounds.width / 2).fill()
     }
 }

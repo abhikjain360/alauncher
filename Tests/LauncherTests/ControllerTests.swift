@@ -15,6 +15,8 @@ final class FakePanel: LauncherPanelHost {
     var rows: [LauncherRow] = []
     var selection: Int?
     var hint: (index: Int, text: String)?
+    /// Nil when every row is on screen.
+    var scroll: ScrollPosition?
     var argumentTitle: String?
     var placeholder: String?
     var secure = false
@@ -29,10 +31,11 @@ final class FakePanel: LauncherPanelHost {
         self.secure = secure
     }
 
-    func display(_ rows: [LauncherRow], selection: Int?, hint: (index: Int, text: String)?) {
+    func display(_ rows: [LauncherRow], selection: Int?, hint: (index: Int, text: String)?, scroll: ScrollPosition?) {
         self.rows = rows
         self.selection = selection
         self.hint = hint
+        self.scroll = scroll
     }
 
     func select(_ index: Int?) {
@@ -198,6 +201,10 @@ struct ControllerTests {
         let onScreen = panel.titles
         #expect(onScreen.count == 2)
 
+        let total = try? #require(panel.scroll?.total)
+        #expect(total ?? 0 > 2)
+        #expect(panel.scroll?.first == 0)
+
         controller.panelMoveSelection(by: 1)
         #expect(panel.titles == onScreen)
         #expect(panel.selection == 1)
@@ -206,6 +213,7 @@ struct ControllerTests {
         controller.panelMoveSelection(by: 1)
         #expect(panel.titles.first == onScreen.last)
         #expect(panel.selection == 1)
+        #expect(panel.scroll?.first == 1)
         let third = panel.titles[1]
         #expect(!onScreen.contains(third))
         #expect(panel.selectedTitle == third)
@@ -217,6 +225,37 @@ struct ControllerTests {
         controller.panelMoveSelection(by: -1)
         #expect(panel.titles == onScreen)
         #expect(panel.selection == 0)
+    }
+
+    @Test("the scroll indicator's thumb is the visible share of the track, and slides to its foot")
+    func scrollThumb() {
+        let track: CGFloat = 100
+        // Half the list on screen: half the track, at the top, then at the foot.
+        #expect(ScrollPosition(first: 0, total: 10).thumb(shown: 5, in: track, minimum: 10) == (0, 50))
+        #expect(ScrollPosition(first: 5, total: 10).thumb(shown: 5, in: track, minimum: 10) == (50, 50))
+        // A long list keeps a thumb you can see, and it still walks the whole track.
+        let middle = ScrollPosition(first: 3, total: 11).thumb(shown: 1, in: track, minimum: 10)
+        #expect(middle == (27, 10))
+        #expect(ScrollPosition(first: 10, total: 11).thumb(shown: 1, in: track, minimum: 10) == (90, 10))
+        // Nothing to scroll: the thumb is the whole track.
+        #expect(ScrollPosition(first: 0, total: 3).thumb(shown: 3, in: track, minimum: 10) == (0, 100))
+    }
+
+    @Test("the mouse moving over a row selects it; a row that isn't there is ignored")
+    func hoverSelectsARow() async {
+        let controller = await makeController()
+        panel.type("c")
+        #expect(panel.titles.count > 1)
+        #expect(panel.selection == 0)
+
+        controller.panelHoveredRow(at: 1)
+        #expect(panel.selection == 1)
+        #expect(panel.selectedTitle == panel.titles[1])
+        // Moving within the same row keeps it, and past the last row changes nothing.
+        controller.panelHoveredRow(at: 1)
+        #expect(panel.selection == 1)
+        controller.panelHoveredRow(at: panel.titles.count)
+        #expect(panel.selection == 1)
     }
 
     @Test("Enter on the calculator row copies, hides and flashes; no launch is recorded")
