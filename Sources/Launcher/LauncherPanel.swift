@@ -36,6 +36,8 @@ final class LauncherPanel: NSPanel, NSWindowDelegate, NSTextFieldDelegate {
     private let separator = NSBox()
     private var rowViews: [ResultRowView] = []
     private var shownRows = 0
+    /// Scroll travel not yet worth a row.
+    private var scrolled: CGFloat = 0
 
     init(icons: IconCache) {
         self.icons = icons
@@ -87,12 +89,11 @@ final class LauncherPanel: NSPanel, NSWindowDelegate, NSTextFieldDelegate {
 
     private var targetScreen: NSScreen?
 
-    /// Picks the screen under the mouse for the next `present()`, and returns how many
-    /// rows fit on it.
-    func prepareToShow() -> Int {
+    /// Picks the screen under the mouse for the next `present()`, so `rowCapacity` counts
+    /// that screen's rows.
+    func prepareToShow() {
         let location = NSEvent.mouseLocation
         targetScreen = NSScreen.screens.first { NSMouseInRect(location, $0.frame, false) } ?? NSScreen.main ?? NSScreen.screens.first
-        return targetScreen.map(Self.maxRows(on:)) ?? 8
     }
 
     /// Positions the panel on the prepared screen, top edge at 22% of its height, then
@@ -319,6 +320,20 @@ final class LauncherPanel: NSPanel, NSWindowDelegate, NSTextFieldDelegate {
         default: return super.performKeyEquivalent(with: event)
         }
         return true
+    }
+
+    /// A wheel or two-finger scroll moves the selection, which scrolls the list. The rows are
+    /// plain views the panel lays out itself, so there is no scroll view to take the event.
+    override func scrollWheel(with event: NSEvent) {
+        if event.phase == .began { scrolled = 0 }
+        scrolled += event.hasPreciseScrollingDeltas ? event.scrollingDeltaY : event.scrollingDeltaY * ResultRowView.height
+        let rows = Int(scrolled / ResultRowView.height)
+        guard rows != 0 else { return }
+        scrolled -= CGFloat(rows) * ResultRowView.height
+        // Scrolling up, towards the top of the list, is a negative move.
+        for _ in 0..<abs(rows) {
+            launcherDelegate?.panelMoveSelection(by: rows > 0 ? -1 : 1)
+        }
     }
 
     func windowDidResignKey(_ notification: Notification) {

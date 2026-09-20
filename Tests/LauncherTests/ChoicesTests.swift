@@ -115,12 +115,14 @@ struct ChoicesTests {
         let items = (0..<5_000).map { ChoicesItem(title: "group\($0 % 50)/entry-\($0)", subtitle: nil, value: "\($0)") }
         let round = ChoicesRound(id: "", placeholder: nil, items: items)
         let keystrokes = ["g", "gr", "gro", "group1", "group1/e", "entry-4", "e4", "zz"]
-        for query in keystrokes { _ = ResultBuilder.pickRows(round, query: query, limit: 8) }
+        // The limit the launcher itself uses, since it decides how much of the list is sorted.
+        let limit = LauncherController.listLimit
+        for query in keystrokes { _ = ResultBuilder.pickRows(round, query: query, limit: limit) }
 
         let rounds = 5
         let start = DispatchTime.now().uptimeNanoseconds
         for _ in 0..<rounds {
-            for query in keystrokes { _ = ResultBuilder.pickRows(round, query: query, limit: 8) }
+            for query in keystrokes { _ = ResultBuilder.pickRows(round, query: query, limit: limit) }
         }
         let milliseconds = Double(DispatchTime.now().uptimeNanoseconds - start) / Double(rounds * keystrokes.count) / 1_000_000
         print(String(format: "choices: %.2f ms per keystroke over %d items", milliseconds, items.count))

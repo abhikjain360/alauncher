@@ -81,6 +81,28 @@ struct ChoicesControllerTests {
         #expect(panel.argumentTitle == nil)
     }
 
+    @Test("a round longer than the panel scrolls, and a click picks the row on screen")
+    func scrollsALongRound() async {
+        panel.rowCapacity = 2
+        let controller = await makeController()
+        openVault(controller)
+        #expect(panel.titles == ["email/gmail", "work/vpn"])
+
+        controller.panelMoveSelection(by: 1)
+        #expect(panel.titles == ["email/gmail", "work/vpn"])
+        #expect(panel.selection == 1)
+        controller.panelMoveSelection(by: 1)
+        #expect(panel.titles == ["work/vpn", "Bank"])
+        #expect(panel.selection == 1)
+        // The end of the list holds.
+        controller.panelMoveSelection(by: 1)
+        #expect(panel.titles == ["work/vpn", "Bank"])
+        #expect(panel.selection == 1)
+
+        controller.panelClickedRow(at: 1)
+        #expect(log.events.last == #"capture Vault ["entry", "bank/main"]"#)
+    }
+
     @Test("several rounds pass each round's id and the pick's value; subtitles don't matter, values do")
     func manyRounds() async {
         let controller = await makeController()

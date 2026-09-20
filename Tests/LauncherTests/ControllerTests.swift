@@ -39,7 +39,7 @@ final class FakePanel: LauncherPanelHost {
         selection = index
     }
 
-    func prepareToShow() -> Int { rowCapacity }
+    func prepareToShow() {}
     func present() { isVisible = true }
     func focus() {}
     func dismiss() { isVisible = false }
@@ -188,6 +188,35 @@ struct ControllerTests {
         let index = panel.titles.firstIndex(of: "Chess") ?? -1
         controller.panelClickedRow(at: index)
         #expect(log.events == ["record app:/System/Applications/Chess.app", "open /System/Applications/Chess.app"])
+    }
+
+    @Test("↓ scrolls the list when the selection leaves the rows on screen")
+    func scrollsResults() async {
+        panel.rowCapacity = 2
+        let controller = await makeController()
+        panel.type("c")
+        let onScreen = panel.titles
+        #expect(onScreen.count == 2)
+
+        controller.panelMoveSelection(by: 1)
+        #expect(panel.titles == onScreen)
+        #expect(panel.selection == 1)
+
+        // The third result: the window scrolls by one and the selection stays at its foot.
+        controller.panelMoveSelection(by: 1)
+        #expect(panel.titles.first == onScreen.last)
+        #expect(panel.selection == 1)
+        let third = panel.titles[1]
+        #expect(!onScreen.contains(third))
+        #expect(panel.selectedTitle == third)
+
+        // Back up: within the window first, then scrolling it back to the top.
+        controller.panelMoveSelection(by: -1)
+        #expect(panel.titles.first == onScreen.last)
+        #expect(panel.selection == 0)
+        controller.panelMoveSelection(by: -1)
+        #expect(panel.titles == onScreen)
+        #expect(panel.selection == 0)
     }
 
     @Test("Enter on the calculator row copies, hides and flashes; no launch is recorded")

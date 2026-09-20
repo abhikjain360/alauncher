@@ -12,7 +12,7 @@ log_level = "info"                      # debug | info | error
 
 [launcher]
 hotkey = "cmd+space"
-max_results = 8
+max_results = 8                         # rows on screen; ↑↓ and scrolling walk up to 200 matches
 # Folders scanned for apps, one level deep, plus non-app subfolders one more level.
 app_dirs = [
   "/Applications",

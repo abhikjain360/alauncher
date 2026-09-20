@@ -16,8 +16,9 @@ protocol LauncherPanelHost: AnyObject {
     func setArgumentMode(title: String?, placeholder: String?, secure: Bool)
     func display(_ rows: [LauncherRow], selection: Int?, hint: (index: Int, text: String)?)
     func select(_ index: Int?)
-    /// Picks the screen under the mouse and returns how many rows fit on it.
-    func prepareToShow() -> Int
+    /// Picks the screen under the mouse for the next `present()`, so `rowCapacity` counts
+    /// that screen's rows.
+    func prepareToShow()
     /// Shows the panel on that screen, key and focused, without activating the app.
     func present()
     /// Makes the already visible panel key again.
@@ -106,6 +107,9 @@ final class LauncherController {
     static let runningPlaceholder = "Running…"
     /// A choices round's placeholder when the round names none.
     static let choicesPlaceholder = "Search"
+    /// The longest list the panel scrolls through. Past it, typing narrows a list faster than
+    /// ↓ walks it, so building more rows on every keystroke would be waste.
+    nonisolated static let listLimit = 200
 
     private var config: Config
     private let builtIns: [BuiltInCommand]
@@ -127,6 +131,9 @@ final class LauncherController {
     private var query = ""
     private var rows: [LauncherRow] = []
     private var selectedIndex: Int?
+    /// The first row on screen: the panel shows `rowLimit` rows, and the list scrolls to keep
+    /// the selection among them.
+    private var scrollOffset = 0
     private var session: ArgumentSession?
     /// A `choices = true` command's rounds, while the panel shows them or its last run finishes.
     private var choices: ChoicesSession?
@@ -209,7 +216,7 @@ final class LauncherController {
         return ResultBuilder(
             ranker: Ranker(frecency: frecency, frecencyWeight: config.launcher.ranking.frecencyWeight),
             calculate: calculate,
-            maxResults: config.launcher.maxResults
+            maxResults: listLimit
         )
     }
 
@@ -254,7 +261,6 @@ final class LauncherController {
             rates = Self.makeRates(newConfig.calculator)
         }
         builder = Self.makeBuilder(config: newConfig, frecency: frecency, rates: rates, calculate: calculateOverride)
-        builder.maxResults = rowLimit
         runner?.extraPath = newConfig.launcher.extraPath
         if old.calculator != newConfig.calculator, panel?.isVisible == true {
             refreshRatesIfStale()
@@ -268,13 +274,15 @@ final class LauncherController {
             rebuildIndex()
         } else if panel?.isVisible == true, !showsOwnRows {
             updateRows(keepSelection: true)
+        } else if before.maxResults != after.maxResults, panel?.isVisible == true {
+            // A taller or shorter window over the rows it already holds.
+            display()
         }
     }
 
     private func useFrecency(_ store: FrecencyStore) {
         frecency = store
         builder = Self.makeBuilder(config: config, frecency: store, rates: rates, calculate: calculateOverride)
-        builder.maxResults = rowLimit
     }
 
     /// Reports a failure once per spec; `apply` retries quietly after that.
@@ -310,7 +318,7 @@ final class LauncherController {
             refreshRatesIfStale()
             return
         }
-        builder.maxResults = min(config.launcher.maxResults, panel.prepareToShow())
+        panel.prepareToShow()
         endArgumentMode(restoreQuery: false)
         // A run left going when the panel closed is abandoned now.
         endChoices(restoreQuery: false)
@@ -332,6 +340,8 @@ final class LauncherController {
         panel.dismiss()
     }
 
+    /// Rows on screen at once: `launcher.max_results`, or fewer on a short screen. The list
+    /// itself holds up to `listLimit` of them and scrolls.
     private var rowLimit: Int {
         min(config.launcher.maxResults, panel?.rowCapacity ?? config.launcher.maxResults)
     }
@@ -377,7 +387,7 @@ final class LauncherController {
             let milliseconds = Int(Date().timeIntervalSince(started) * 1000)
             if usesLiveStores {
                 Log.main("launcher: indexed \(newCatalog.items.count) items in \(milliseconds) ms")
-                icons.prefetch(builder.rows(for: "", in: newCatalog).compactMap(\.icon))
+                icons.prefetch(builder.rows(for: "", in: newCatalog).prefix(rowLimit).compactMap(\.icon))
             }
         }
         if panel?.isVisible == true, !showsOwnRows {
@@ -435,15 +445,31 @@ final class LauncherController {
             selectedIndex = index
         } else {
             selectedIndex = rows.firstIndex(where: \.isEnabled)
+            scrollOffset = 0
         }
         display()
     }
 
+    /// Shows the rows that fit on screen, scrolled far enough down to hold the selection.
     private func display() {
+        let limit = rowLimit
+        scrollOffset = Self.offset(showing: selectedIndex, from: scrollOffset, of: rows.count, visible: limit)
+        let onScreen = Array(rows[scrollOffset..<min(rows.count, scrollOffset + limit)])
         let hint = pendingConfirmationID
             .flatMap { id in rows.firstIndex { $0.id == id } }
-            .map { (index: $0, text: Self.confirmationHint) }
-        panel?.display(rows, selection: selectedIndex, hint: hint)
+            .map { (index: $0 - scrollOffset, text: Self.confirmationHint) }
+        panel?.display(onScreen, selection: selectedIndex.map { $0 - scrollOffset }, hint: hint)
+    }
+
+    /// Scrolls the window of `visible` rows by as little as it takes to hold `selection`.
+    static func offset(showing selection: Int?, from offset: Int, of count: Int, visible: Int) -> Int {
+        guard visible > 0 else { return 0 }
+        var offset = min(offset, count - visible)
+        if let selection {
+            offset = min(offset, selection)
+            offset = max(offset, selection - visible + 1)
+        }
+        return max(0, offset)
     }
 
     private func loadedEmojiIndex() -> EmojiIndex {
@@ -757,11 +783,14 @@ extension LauncherController: LauncherPanelDelegate {
         } while rows.indices.contains(index) && !rows[index].isEnabled
         guard rows.indices.contains(index) else { return }
         selectedIndex = index
+        let scrolls = Self.offset(showing: index, from: scrollOffset, of: rows.count, visible: rowLimit) != scrollOffset
         if pendingConfirmationID != nil, session == nil {
             pendingConfirmationID = nil
             display()
+        } else if scrolls {
+            display()
         } else {
-            panel?.select(index)
+            panel?.select(index - scrollOffset)
         }
     }
 
@@ -847,7 +876,9 @@ extension LauncherController: LauncherPanelDelegate {
         hide()
     }
 
+    /// `index` counts the rows on screen, so the rows scrolled past come before it.
     func panelClickedRow(at index: Int) {
+        let index = scrollOffset + index
         guard rows.indices.contains(index), rows[index].isEnabled else { return }
         selectedIndex = index
         panelActivate()

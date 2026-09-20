@@ -275,7 +275,8 @@ extension Fixture {
         let frecency = FrecencyStore(fileURL: nil)
         for index in stride(from: 0, to: 290, by: 9) { frecency.recordLaunch(of: "app:/Applications/App\(index).app", now: now) }
         let calculator = Calculator()
-        let builder = ResultBuilder(ranker: Ranker(frecency: frecency), calculate: { calculator.evaluate($0) }, maxResults: 8)
+        // The launcher's own limit: it builds every row the list can scroll through.
+        let builder = ResultBuilder(ranker: Ranker(frecency: frecency), calculate: { calculator.evaluate($0) }, maxResults: LauncherController.listLimit)
         let keystrokes = ["v", "vi", "vis", "visu", "visual", "visual s", "visual st", "s", "sa", "saf", "safa", "safar", "safari",
                           "m", "mo", "mon", "2", "2+", "2+2", "s3 hello", "x", "xc", "xco"]
         return (catalog, builder, keystrokes)
