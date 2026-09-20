@@ -12,7 +12,7 @@ log_level = "info"                      # debug | info | error
 
 [launcher]
 hotkey = "cmd+space"
-max_results = 8                         # rows on screen; ↑↓ and scrolling walk up to 200 matches
+max_results = 8                         # rows on screen; ↑↓ and scrolling walk every match
 # Folders scanned for apps, one level deep, plus non-app subfolders one more level.
 app_dirs = [
   "/Applications",
@@ -61,6 +61,9 @@ max_age = 10000                         # zoxide's _ZO_MAXAGE
 # lists items to pick from, each a string or {"title", "subtitle", "value"}; picking one
 # runs the command again with the id as $1 and the value as $2. {"final": "text"} ends
 # it, and mode says what happens to the text. Empty output ends it quietly.
+#
+# Every item a round prints is listed, however many there are; a command that wants a
+# shorter list prints fewer items, or pages with one round per page.
 
 [calculator]
 enabled = true

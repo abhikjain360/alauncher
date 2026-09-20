@@ -51,10 +51,10 @@ enum Fixture {
 
     static func builder(
         _ frecency: FrecencyStore = FrecencyStore(fileURL: nil),
-        maxResults: Int = 8,
+        limit: Int = 8,
         calculate: (@Sendable (String) -> CalcOutcome)? = fakeCalculate
     ) -> ResultBuilder {
-        ResultBuilder(ranker: Ranker(frecency: frecency), calculate: calculate, maxResults: maxResults)
+        ResultBuilder(ranker: Ranker(frecency: frecency), calculate: calculate, limit: limit)
     }
 }
 
@@ -92,7 +92,7 @@ struct QueryTests {
 
     @Test("the calculator row comes before matching items and counts toward max_results")
     func calculatorRowWithItems() {
-        let result = rows("c", builder: Fixture.builder(maxResults: 3))
+        let result = rows("c", builder: Fixture.builder(limit: 3))
         #expect(result.count == 3)
         #expect(result.first?.id == "calc:result")
         #expect(result.dropFirst().allSatisfy { $0.rankedItem != nil })
@@ -190,9 +190,9 @@ struct QueryTests {
             ScriptCommand.Argument.Choice(title: "Personal", value: "p"),
             ScriptCommand.Argument.Choice(title: "Wiki", value: "k"),
         ]
-        #expect(ResultBuilder.choiceRows(choices, query: "", limit: 8).map(\.title) == ["Work", "Personal", "Wiki"])
-        #expect(ResultBuilder.choiceRows(choices, query: "wi", limit: 8).map(\.title) == ["Wiki"])
-        #expect(ResultBuilder.choiceRows(choices, query: "", limit: 2).count == 2)
+        #expect(ResultBuilder.choiceRows(choices, query: "").map(\.title) == ["Work", "Personal", "Wiki"])
+        #expect(ResultBuilder.choiceRows(choices, query: "wi").map(\.title) == ["Wiki"])
+        #expect(ResultBuilder.choiceRows(choices, query: "zz").isEmpty)
     }
 
     @Test("a keystroke turns into rows in under 5 ms with 300 items")
@@ -275,8 +275,8 @@ extension Fixture {
         let frecency = FrecencyStore(fileURL: nil)
         for index in stride(from: 0, to: 290, by: 9) { frecency.recordLaunch(of: "app:/Applications/App\(index).app", now: now) }
         let calculator = Calculator()
-        // The launcher's own limit: it builds every row the list can scroll through.
-        let builder = ResultBuilder(ranker: Ranker(frecency: frecency), calculate: { calculator.evaluate($0) }, maxResults: LauncherController.listLimit)
+        // The panel's own limit: every match, since the list scrolls through all of them.
+        let builder = ResultBuilder(ranker: Ranker(frecency: frecency), calculate: { calculator.evaluate($0) }, limit: .max)
         let keystrokes = ["v", "vi", "vis", "visu", "visual", "visual s", "visual st", "s", "sa", "saf", "safa", "safar", "safari",
                           "m", "mo", "mon", "2", "2+", "2+2", "s3 hello", "x", "xc", "xco"]
         return (catalog, builder, keystrokes)

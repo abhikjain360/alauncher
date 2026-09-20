@@ -298,12 +298,12 @@ struct SearchTests {
             item("Application \(index) Visual Studio Code", id: "app:\(index)", keywords: ["code", "application"])
         }
         let ranker = Ranker(frecency: store)
-        for _ in 0..<5 { _ = ranker.rank("vsc", in: items, limit: 20, now: now) }
+        for _ in 0..<5 { _ = ranker.rank("vsc", in: items, limit: .max, now: now) }
 
         let iterations = 100
         let start = DispatchTime.now().uptimeNanoseconds
         for _ in 0..<iterations {
-            _ = ranker.rank("vsc", in: items, limit: 20, now: now)
+            _ = ranker.rank("vsc", in: items, limit: .max, now: now)
         }
         let elapsed = DispatchTime.now().uptimeNanoseconds - start
         let averageNanoseconds = Double(elapsed) / Double(iterations)

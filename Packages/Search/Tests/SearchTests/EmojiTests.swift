@@ -100,12 +100,12 @@ struct EmojiTests {
                           "t", "ta", "tad", "tada", "flag i", "flag in", "thumbs u", "thumbs up"]
         let store = FrecencyStore(fileURL: nil)
         store.recordLaunch(of: EmojiIndex.frecencyID(for: "❤️"), now: now)
-        for query in keystrokes { _ = index.search(query, limit: 8, frecency: store, now: now) }
+        for query in keystrokes { _ = index.search(query, limit: .max, frecency: store, now: now) }
 
         let rounds = 10
         var start = DispatchTime.now().uptimeNanoseconds
         for _ in 0..<rounds {
-            for query in keystrokes { _ = index.search(query, limit: 8, frecency: store, now: now) }
+            for query in keystrokes { _ = index.search(query, limit: .max, frecency: store, now: now) }
         }
         let search = Double(DispatchTime.now().uptimeNanoseconds - start) / Double(rounds * keystrokes.count) / 1_000_000
 

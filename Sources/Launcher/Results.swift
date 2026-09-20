@@ -53,17 +53,18 @@ struct ResultBuilder {
     var ranker: Ranker
     /// Nil when `calculator.enabled` is off.
     var calculate: (@Sendable (String) -> CalcOutcome)?
-    /// `launcher.maxResults`, counting the calculator row.
-    var maxResults: Int
+    /// The most rows to build, counting the calculator row. The panel passes `.max`: it holds
+    /// every match and scrolls through them. The CLI prints `launcher.max_results` of them.
+    var limit: Int
 
     /// `emojiIndex` is only called for an emoji search, so the index loads when one starts.
     func rows(
         for query: String, in catalog: Catalog, now: Date = Date(), emojiIndex: () -> EmojiIndex = EmojiIndex.load
     ) -> [LauncherRow] {
-        guard maxResults > 0 else { return [] }
+        guard limit > 0 else { return [] }
         if let text = Self.emojiQuery(query, in: catalog) {
             return emojiIndex()
-                .search(text, limit: maxResults, frecency: ranker.frecency, frecencyWeight: ranker.frecencyWeight, now: now)
+                .search(text, limit: limit, frecency: ranker.frecency, frecencyWeight: ranker.frecencyWeight, now: now)
                 .map(Self.emojiRow)
         }
         var rows: [LauncherRow] = []
@@ -72,7 +73,7 @@ struct ResultBuilder {
             rows.append(row)
         }
 
-        let ranked = ranker.rank(query, in: catalog.items, limit: maxResults - rows.count, now: now)
+        let ranked = ranker.rank(query, in: catalog.items, limit: limit - rows.count, now: now)
         rows.reserveCapacity(rows.count + ranked.count)
         for rankedItem in ranked {
             rows.append(Self.itemRow(rankedItem, icon: catalog.entry(for: rankedItem.item.id)?.icon))
@@ -169,11 +170,7 @@ struct ResultBuilder {
 
     /// A dropdown argument's choices, fuzzy-filtered by what's typed; all of them,
     /// in declared order, when nothing is.
-    static func choiceRows(
-        _ choices: [ScriptCommand.Argument.Choice],
-        query: String,
-        limit: Int
-    ) -> [LauncherRow] {
+    static func choiceRows(_ choices: [ScriptCommand.Argument.Choice], query: String) -> [LauncherRow] {
         let trimmed = query.trimmingCharacters(in: .whitespacesAndNewlines)
         var matches: [(offset: Int, score: Double, positions: [Int])] = []
         for (offset, choice) in choices.enumerated() {
@@ -184,7 +181,7 @@ struct ResultBuilder {
             }
         }
         matches.sort { $0.score != $1.score ? $0.score > $1.score : $0.offset < $1.offset }
-        return matches.prefix(max(0, limit)).map { match in
+        return matches.map { match in
             let choice = choices[match.offset]
             return LauncherRow(
                 content: .choice(choice),
@@ -199,13 +196,13 @@ struct ResultBuilder {
     }
 
     /// A choices round's items, fuzzy-filtered by what's typed, best first; all of them, in
-    /// order, when nothing is.
-    static func pickRows(_ round: ChoicesRound, query: String, limit: Int) -> [LauncherRow] {
-        let limit = max(0, limit)
+    /// order, when nothing is. Every item the round printed is listed: a command that wants a
+    /// shorter list prints fewer items, or pages with a round per page.
+    static func pickRows(_ round: ChoicesRound, query: String) -> [LauncherRow] {
         let trimmed = query.trimmingCharacters(in: .whitespacesAndNewlines)
         let matches: [(index: Int, match: FuzzyMatch)] = trimmed.isEmpty
-            ? round.items.indices.prefix(limit).map { (index: $0, match: FuzzyMatch(score: 0, positions: [])) }
-            : round.titles.best(trimmed, limit: limit)
+            ? round.items.indices.map { (index: $0, match: FuzzyMatch(score: 0, positions: [])) }
+            : round.titles.sortedMatches(trimmed)
         return matches.map { found in
             let item = round.items[found.index]
             return LauncherRow(

@@ -107,9 +107,6 @@ final class LauncherController {
     static let runningPlaceholder = "Running…"
     /// A choices round's placeholder when the round names none.
     static let choicesPlaceholder = "Search"
-    /// The longest list the panel scrolls through. Past it, typing narrows a list faster than
-    /// ↓ walks it, so building more rows on every keystroke would be waste.
-    nonisolated static let listLimit = 200
 
     private var config: Config
     private let builtIns: [BuiltInCommand]
@@ -216,7 +213,8 @@ final class LauncherController {
         return ResultBuilder(
             ranker: Ranker(frecency: frecency, frecencyWeight: config.launcher.ranking.frecencyWeight),
             calculate: calculate,
-            maxResults: listLimit
+            // Every match: the panel shows the rows that fit and scrolls through the rest.
+            limit: .max
         )
     }
 
@@ -341,7 +339,7 @@ final class LauncherController {
     }
 
     /// Rows on screen at once: `launcher.max_results`, or fewer on a short screen. The list
-    /// itself holds up to `listLimit` of them and scrolls.
+    /// itself holds every match and scrolls.
     private var rowLimit: Int {
         min(config.launcher.maxResults, panel?.rowCapacity ?? config.launcher.maxResults)
     }
@@ -424,7 +422,7 @@ final class LauncherController {
         if let choices {
             // No rows while a run is in flight; what's typed meanwhile filters the next round.
             if !choices.isRunning, let round = choices.rounds.last {
-                rows = ResultBuilder.pickRows(round, query: query, limit: builder.maxResults)
+                rows = ResultBuilder.pickRows(round, query: query)
             } else {
                 rows = []
             }
@@ -433,7 +431,7 @@ final class LauncherController {
                 let ranked = RankedItem(item: entry.item, score: 0, titlePositions: [], arguments: session.values)
                 rows = [ResultBuilder.itemRow(ranked, icon: entry.icon)]
             } else if session.current.type == "dropdown" {
-                rows = ResultBuilder.choiceRows(session.current.choices, query: query, limit: builder.maxResults)
+                rows = ResultBuilder.choiceRows(session.current.choices, query: query)
             } else {
                 rows = []
             }

@@ -55,8 +55,9 @@ public struct SearchItem: Hashable, Sendable {
 ## Fuzzy lists: `FuzzyList`
 
 - `FuzzyList(_ titles:)` prepares a fixed list of titles once. `matches(_ query:)` returns every title that matches, by index and in list order, scored exactly as `FuzzyMatcher.match` scores it.
+- `sortedMatches(_ query:)` returns the same matches best first; equal scores keep list order.
 - An empty query matches none.
-- The launcher filters a choices command's items with it on every keystroke; 5,000 items must take well under 5 ms in a release build.
+- The launcher filters a choices command's items with it on every keystroke, and lists every match, so 5,000 items must take well under 5 ms in a release build.
 
 ## Keywords and aliases
 

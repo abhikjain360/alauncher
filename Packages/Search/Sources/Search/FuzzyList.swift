@@ -25,20 +25,11 @@ public struct FuzzyList: Sendable {
         return result
     }
 
-    /// The `limit` best matches, best first; equal scores keep list order. Cheaper than sorting
-    /// `matches`, since it never holds more than `limit`.
-    public func best(_ query: String, limit: Int) -> [(index: Int, match: FuzzyMatch)] {
-        guard limit > 0 else { return [] }
-        var best: [(index: Int, match: FuzzyMatch)] = []
-        best.reserveCapacity(limit + 1)
-        forEachMatch(query) { index, match in
-            // Later titles lose ties, so one no better than the last kept is out.
-            if best.count == limit, let last = best.last, match.score <= last.match.score { return }
-            let position = best.firstIndex { $0.match.score < match.score } ?? best.count
-            best.insert((index, match), at: position)
-            if best.count > limit { best.removeLast() }
-        }
-        return best
+    /// Every match, best first; equal scores keep list order.
+    public func sortedMatches(_ query: String) -> [(index: Int, match: FuzzyMatch)] {
+        var found = matches(query)
+        found.sort { $0.match.score != $1.match.score ? $0.match.score > $1.match.score : $0.index < $1.index }
+        return found
     }
 
     private func forEachMatch(_ query: String, _ body: (Int, FuzzyMatch) -> Void) {

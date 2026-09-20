@@ -78,7 +78,7 @@ struct RealIndexSmokeTests {
         }
 
         let calculator = Calculator()
-        let builder = ResultBuilder(ranker: Ranker(frecency: FrecencyStore(fileURL: nil)), calculate: { calculator.evaluate($0) }, maxResults: 8)
+        let builder = ResultBuilder(ranker: Ranker(frecency: FrecencyStore(fileURL: nil)), calculate: { calculator.evaluate($0) }, limit: .max)
         let queries = ["s", "sa", "saf", "safa", "safar", "safari", "t", "te", "ter", "term", "2", "2*", "2*3", "p", "pa", "pass", "v", "vs", "vsc"]
         for query in queries { _ = builder.rows(for: query, in: catalog) }
         let rounds = 20

@@ -88,7 +88,7 @@ struct ChoicesTests {
         #expect(error(#"{"placeholder": [], "items": []}"#) == #""placeholder" must be a string"#)
     }
 
-    @Test("a round's rows: every item in order up to the limit, or fuzzy matches best first, with subtitles")
+    @Test("a round's rows: every item in order, or every fuzzy match best first, with subtitles")
     func rows() {
         let round = ChoicesRound(id: "entry", placeholder: nil, items: [
             ChoicesItem(title: "email/gmail", subtitle: nil, value: "email/gmail"),
@@ -96,18 +96,17 @@ struct ChoicesTests {
             ChoicesItem(title: "bank/chase", subtitle: nil, value: "bank/chase"),
             ChoicesItem(title: "Café", subtitle: nil, value: "cafe"),
         ])
-        let all = ResultBuilder.pickRows(round, query: " ", limit: 3)
-        #expect(all.map(\.title) == ["email/gmail", "work/vpn", "bank/chase"])
-        #expect(all.map(\.id) == ["pick:0", "pick:1", "pick:2"])
+        let all = ResultBuilder.pickRows(round, query: " ")
+        #expect(all.map(\.title) == ["email/gmail", "work/vpn", "bank/chase", "Café"])
+        #expect(all.map(\.id) == ["pick:0", "pick:1", "pick:2", "pick:3"])
         #expect(all[1].subtitle == "office")
 
-        let vpn = ResultBuilder.pickRows(round, query: "vpn", limit: 8)
+        let vpn = ResultBuilder.pickRows(round, query: "vpn")
         #expect(vpn.map(\.title) == ["work/vpn"])
         #expect(vpn.first?.titlePositions == [5, 6, 7])
-        #expect(ResultBuilder.pickRows(round, query: "cafe", limit: 8).map(\.title) == ["Café"])
-        #expect(ResultBuilder.pickRows(round, query: "zzz", limit: 8).isEmpty)
-        #expect(ResultBuilder.pickRows(round, query: "a", limit: 0).isEmpty)
-        #expect(ResultBuilder.pickRows(ChoicesRound(id: "", placeholder: nil, items: []), query: "", limit: 8).isEmpty)
+        #expect(ResultBuilder.pickRows(round, query: "cafe").map(\.title) == ["Café"])
+        #expect(ResultBuilder.pickRows(round, query: "zzz").isEmpty)
+        #expect(ResultBuilder.pickRows(ChoicesRound(id: "", placeholder: nil, items: []), query: "").isEmpty)
     }
 
     @Test("filtering 5,000 items per keystroke stays fast")
@@ -115,14 +114,12 @@ struct ChoicesTests {
         let items = (0..<5_000).map { ChoicesItem(title: "group\($0 % 50)/entry-\($0)", subtitle: nil, value: "\($0)") }
         let round = ChoicesRound(id: "", placeholder: nil, items: items)
         let keystrokes = ["g", "gr", "gro", "group1", "group1/e", "entry-4", "e4", "zz"]
-        // The limit the launcher itself uses, since it decides how much of the list is sorted.
-        let limit = LauncherController.listLimit
-        for query in keystrokes { _ = ResultBuilder.pickRows(round, query: query, limit: limit) }
+        for query in keystrokes { _ = ResultBuilder.pickRows(round, query: query) }
 
         let rounds = 5
         let start = DispatchTime.now().uptimeNanoseconds
         for _ in 0..<rounds {
-            for query in keystrokes { _ = ResultBuilder.pickRows(round, query: query, limit: limit) }
+            for query in keystrokes { _ = ResultBuilder.pickRows(round, query: query) }
         }
         let milliseconds = Double(DispatchTime.now().uptimeNanoseconds - start) / Double(rounds * keystrokes.count) / 1_000_000
         print(String(format: "choices: %.2f ms per keystroke over %d items", milliseconds, items.count))

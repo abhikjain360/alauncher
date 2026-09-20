@@ -63,7 +63,7 @@ public enum LauncherCLI {
         let builder = ResultBuilder(
             ranker: Ranker(frecency: context.frecency, frecencyWeight: context.frecencyWeight),
             calculate: context.calculatorEnabled ? context.calculator : nil,
-            maxResults: context.maxResults
+            limit: context.maxResults
         )
         // An emoji search parses the index first, timed on its own.
         var emoji: (index: EmojiIndex, milliseconds: Double)?
