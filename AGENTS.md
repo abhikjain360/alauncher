@@ -17,6 +17,7 @@ It is configured only through text files, so there is no settings UI. The produc
 | `Sources/Overlay` | The bottom-of-screen pill and the `TextPanel` popup. AppKit only. |
 | `Sources/Dictation` | See below. |
 | `Sources/Launcher` | Launcher panel, app and script index, script runner, calculator row, emoji search rows. |
+| `Sources/Windows` | Raycast-style window management commands and geometry. |
 | `Packages/Calc` | Calculator library. Its contract is `docs/calc-grammar.md`. |
 | `Packages/Search` | Fuzzy matcher, zoxide frecency, ranker, Raycast script-header parser, emoji index. Its contract is `docs/search-spec.md`. |
 | `Resources` | `Info.plist`, and `default-config.toml`, which documents every config key. |

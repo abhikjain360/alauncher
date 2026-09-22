@@ -37,9 +37,10 @@ let package = Package(
                 .product(name: "Search", package: "Search"),
             ]
         ),
+        .target(name: "Windows", dependencies: ["Core", "Overlay"]),
         .executableTarget(
             name: "alauncher",
-            dependencies: ["Core", "Overlay", "Dictation", "Launcher"]
+            dependencies: ["Core", "Overlay", "Dictation", "Launcher", "Windows"]
         ),
         .testTarget(
             name: "CoreTests",
@@ -53,6 +54,10 @@ let package = Package(
         .testTarget(
             name: "LauncherTests",
             dependencies: ["Launcher"]
+        ),
+        .testTarget(
+            name: "WindowsTests",
+            dependencies: ["Windows"]
         ),
     ],
     swiftLanguageModes: [.v5]

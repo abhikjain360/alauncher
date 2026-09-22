@@ -136,11 +136,12 @@ enum CatalogBuilder {
             let item = SearchItem(
                 id: "builtin:\(builtIn.title)",
                 title: builtIn.title,
+                keywords: builtIn.keywords,
                 aliases: aliases(builtIn.aliases, title: builtIn.title),
                 subtitle: nonEmpty(builtIn.subtitle),
                 kind: .command
             )
-            entries.append(CatalogEntry(item: item, action: .builtIn(builtIn), icon: .symbol("command")))
+            entries.append(CatalogEntry(item: item, action: .builtIn(builtIn), icon: .symbol(builtIn.symbol)))
         }
 
         if !exclude.excludes(title: EmojiSearchItem.title) {

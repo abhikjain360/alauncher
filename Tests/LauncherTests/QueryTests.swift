@@ -147,7 +147,13 @@ struct QueryTests {
 
     @Test("built-in commands match by title and alias, and take no arguments")
     func builtInCommands() throws {
-        let reload = BuiltInCommand(title: "Reload config", subtitle: "Read config.toml again", aliases: ["rc"]) {}
+        let reload = BuiltInCommand(
+            title: "Reload config",
+            subtitle: "Read config.toml again",
+            keywords: ["window reload"],
+            symbol: "bolt",
+            aliases: ["rc"]
+        ) {}
         let catalog = Fixture.catalog(builtIns: [reload])
 
         let first = try #require(rows("rc", catalog).first)
@@ -156,7 +162,10 @@ struct QueryTests {
         #expect(first.subtitle == "Read config.toml again")
         #expect(first.hint == "Command")
         #expect(first.rankedItem?.item.argumentCount == nil)
+        #expect(catalog.entry(for: "builtin:Reload config")?.item.keywords == ["window reload"])
+        #expect(catalog.entry(for: "builtin:Reload config")?.icon == .symbol("bolt"))
         #expect(rows("reload", catalog).first?.id == "builtin:Reload config")
+        #expect(rows("window reload", catalog).first?.id == "builtin:Reload config")
         #expect(rows("rc now", catalog).allSatisfy { $0.rankedItem?.arguments == nil })
     }
 

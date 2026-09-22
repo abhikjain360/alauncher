@@ -5,6 +5,7 @@ import Launcher
 import Overlay
 import ServiceManagement
 import UniformTypeIdentifiers
+import Windows
 
 @MainActor
 final class AppDelegate: NSObject, NSApplicationDelegate {
@@ -58,6 +59,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     }
 
     private func builtInCommands() -> [BuiltInCommand] {
+        appCommands() + windowCommands()
+    }
+
+    /// The commands about alauncher itself. They also make up the menu-bar menu.
+    private func appCommands() -> [BuiltInCommand] {
         [
             BuiltInCommand(title: "Reload config", aliases: ["reload"]) { [weak self] in
                 self?.configStore.reload()
@@ -75,6 +81,21 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             },
             BuiltInCommand(title: "Quit alauncher") { NSApp.terminate(nil) },
         ]
+    }
+
+    /// Raycast's window commands, found by title or by "window …", so they stay out of the
+    /// menu-bar menu: there are 29 of them.
+    private func windowCommands() -> [BuiltInCommand] {
+        WindowCommand.allCases.map { command in
+            BuiltInCommand(
+                title: command.title,
+                subtitle: "Window Management",
+                keywords: ["window \(command.title.lowercased())"],
+                symbol: command.symbol
+            ) {
+                Windows.perform(command)
+            }
+        }
     }
 
     /// `.toml` often has no registered app, so use the default plain-text editor.
@@ -114,7 +135,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         let item = NSStatusBar.system.statusItem(withLength: NSStatusItem.squareLength)
         item.button?.image = NSImage(systemSymbolName: "command", accessibilityDescription: "alauncher")
         let menu = NSMenu()
-        for command in builtInCommands() {
+        for command in appCommands() {
             let entry = NSMenuItem(title: command.title, action: #selector(runMenuCommand(_:)), keyEquivalent: "")
             entry.target = self
             entry.representedObject = MenuCommand(action: command.action)
