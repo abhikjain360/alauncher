@@ -3,6 +3,7 @@ import Core
 import Foundation
 import Search
 import Testing
+import Windows
 @testable import Launcher
 
 /// Stands in for the panel and records what the controller shows. No window.
@@ -71,10 +72,21 @@ final class EffectLog {
     var lastRun: ScriptInvocation?
     /// Choices runs, oldest first. `finish` ends the latest.
     var captures: [(title: String, arguments: [String], completion: @MainActor (ScriptRunResult) -> Void)] = []
+    var windowsByPath: [String: [AppWindow]] = [:]
+    var windowRequests: [String] = []
+    var focusWindowCalls: [(window: AppWindow, path: String)] = []
 
     var effects: LauncherEffects {
         LauncherEffects(
             openApplication: { self.events.append("open \($0)") },
+            windows: {
+                self.windowRequests.append($0)
+                return self.windowsByPath[$0] ?? []
+            },
+            focusWindow: { window, path in
+                self.focusWindowCalls.append((window: window, path: path))
+                self.events.append("focus \(window.title) \(path)")
+            },
             reveal: { self.events.append("reveal \($0)") },
             copy: { self.events.append("copy \($0)") },
             flash: { text, isError in self.events.append(isError ? "flash error \(text)" : "flash \(text)") },
@@ -172,8 +184,8 @@ struct ControllerTests {
         return controller
     }
 
-    @Test("Enter opens the selected app, records the launch and hides the panel")
-    func openApp() async {
+    @Test("a non-running app opens, records the launch and hides the panel")
+    func nonRunningAppOpens() async {
         let controller = await makeController()
         #expect(panel.isVisible)
         panel.type("saf")
@@ -182,6 +194,89 @@ struct ControllerTests {
         #expect(log.events == ["record app:/Applications/Safari.app", "open /Applications/Safari.app"])
         #expect(!panel.isVisible)
         #expect(frecency.score(for: "app:/Applications/Safari.app") > 0)
+    }
+
+    @Test("an app with several windows shows a choices round, filters it, and focuses the pick")
+    func windowPicker() async {
+        log.windowsByPath["/Applications/Safari.app"] = [
+            AppWindow(title: "Inbox"),
+            AppWindow(title: "Settings", isMinimized: true),
+        ]
+        let controller = await makeController()
+        panel.type("saf")
+        controller.panelActivate()
+
+        #expect(log.events == ["record app:/Applications/Safari.app"])
+        #expect(panel.argumentTitle == "Safari")
+        #expect(panel.placeholder == "Window")
+        #expect(panel.text.isEmpty)
+        #expect(panel.titles == ["Inbox", "Settings"])
+        #expect(panel.rows[0].subtitle == nil)
+        #expect(panel.rows[1].subtitle == "Minimized")
+        #expect(panel.isVisible)
+
+        panel.type("set")
+        #expect(panel.titles == ["Settings"])
+        controller.panelActivate()
+
+        #expect(log.events == [
+            "record app:/Applications/Safari.app",
+            "focus Settings /Applications/Safari.app",
+        ])
+        #expect(log.focusWindowCalls.count == 1)
+        #expect(log.focusWindowCalls.first?.window.title == "Settings")
+        #expect(log.focusWindowCalls.first?.path == "/Applications/Safari.app")
+        #expect(!log.events.contains { $0.hasPrefix("open ") })
+        #expect(!panel.isVisible)
+    }
+
+    @Test("an app with one window opens as usual")
+    func oneWindowOpens() async {
+        log.windowsByPath["/Applications/Safari.app"] = [AppWindow(title: "Inbox")]
+        let controller = await makeController()
+        panel.type("saf")
+        controller.panelActivate()
+
+        #expect(log.events == ["record app:/Applications/Safari.app", "open /Applications/Safari.app"])
+        #expect(!panel.isVisible)
+    }
+
+    @Test("Esc from the window round returns to the exact search query")
+    func windowPickerEscape() async {
+        log.windowsByPath["/Applications/Safari.app"] = [
+            AppWindow(title: "Inbox"),
+            AppWindow(title: "Settings"),
+        ]
+        let controller = await makeController()
+        panel.type("saf")
+        controller.panelActivate()
+        panel.type("set")
+        controller.panelCancel()
+
+        #expect(log.events == ["record app:/Applications/Safari.app"])
+        #expect(panel.argumentTitle == nil)
+        #expect(panel.text == "saf")
+        #expect(panel.selectedTitle == "Safari")
+        #expect(panel.isVisible)
+    }
+
+    @Test("hovering and clicking a window row focuses it")
+    func windowPickerMouse() async {
+        log.windowsByPath["/Applications/Safari.app"] = [
+            AppWindow(title: "Inbox"),
+            AppWindow(title: "Settings"),
+        ]
+        let controller = await makeController()
+        panel.type("saf")
+        controller.panelActivate()
+        controller.panelHoveredRow(at: 1)
+        #expect(panel.selectedTitle == "Settings")
+        controller.panelClickedRow(at: 1)
+
+        #expect(log.focusWindowCalls.count == 1)
+        #expect(log.focusWindowCalls[0].window.title == "Settings")
+        #expect(!log.events.contains { $0.hasPrefix("open ") })
+        #expect(!panel.isVisible)
     }
 
     @Test("clicking a row activates it")

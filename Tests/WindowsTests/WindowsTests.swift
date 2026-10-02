@@ -7,6 +7,23 @@ struct WindowsTests {
     private let screen = CGRect(x: 120, y: 40, width: 1440, height: 900)
     private let window = CGRect(x: 500, y: 260, width: 520, height: 360)
 
+    @Test("window titles fall back to the app name when Accessibility has none")
+    func windowTitleFallback() {
+        #expect(Windows.windowTitle(nil, appName: "Safari") == "Safari")
+        #expect(Windows.windowTitle("", appName: "Safari") == "Safari")
+        #expect(Windows.windowTitle("Inbox", appName: "Safari") == "Inbox")
+    }
+
+    @Test("the window picker keeps standard windows and dialogs, but skips panels")
+    func pickableWindowRoles() {
+        #expect(Windows.isPickableWindow(role: "AXWindow", subrole: nil))
+        #expect(Windows.isPickableWindow(role: "AXWindow", subrole: ""))
+        #expect(Windows.isPickableWindow(role: "AXWindow", subrole: "AXStandardWindow"))
+        #expect(Windows.isPickableWindow(role: "AXWindow", subrole: "AXDialog"))
+        #expect(!Windows.isPickableWindow(role: "AXWindow", subrole: "AXFloatingWindow"))
+        #expect(!Windows.isPickableWindow(role: "AXSheet", subrole: nil))
+    }
+
     @Test("every command has a unique title and a symbol available on macOS")
     func commandsHaveTitlesAndSymbols() {
         let commands = WindowCommand.allCases

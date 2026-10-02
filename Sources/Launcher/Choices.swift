@@ -1,5 +1,6 @@
 import Foundation
 import Search
+import Windows
 
 // The choices protocol, for `[[launcher.commands]]` with `choices = true`. Every run prints one
 // JSON object: another list to pick from, or the final text. Picking an item runs the command
@@ -108,10 +109,14 @@ enum ChoicesOutput {
 }
 
 /// A choices command's back-and-forth, while the panel shows it.
+enum ChoicesSource: Sendable {
+    case script(ScriptInvocation)
+    case window(path: String, windows: [AppWindow])
+}
+
 struct ChoicesSession {
     let title: String
-    /// The command. Its `targetPID` is the app that was frontmost at the last Enter.
-    var invocation: ScriptInvocation
+    var source: ChoicesSource
     /// The query before the session, which leaving it puts back.
     let previousQuery: String
     /// The rounds shown so far, oldest first. The last is on screen unless a run is in flight.
@@ -121,4 +126,27 @@ struct ChoicesSession {
     var isClosed = false
     /// Counts runs, so that a cancelled run's late result is ignored.
     var generation = 0
+
+    init(title: String, invocation: ScriptInvocation, previousQuery: String) {
+        self.title = title
+        source = .script(invocation)
+        self.previousQuery = previousQuery
+    }
+
+    init(title: String, path: String, windows: [AppWindow], previousQuery: String) {
+        self.title = title
+        source = .window(path: path, windows: windows)
+        self.previousQuery = previousQuery
+        rounds = [ChoicesRound(
+            id: "windows",
+            placeholder: "Window",
+            items: windows.enumerated().map { index, window in
+                ChoicesItem(
+                    title: window.title,
+                    subtitle: window.isMinimized ? "Minimized" : nil,
+                    value: String(index)
+                )
+            }
+        )]
+    }
 }

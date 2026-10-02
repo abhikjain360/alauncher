@@ -32,7 +32,7 @@ let package = Package(
         .target(
             name: "Launcher",
             dependencies: [
-                "Core", "Overlay",
+                "Core", "Overlay", "Windows",
                 .product(name: "Calc", package: "Calc"),
                 .product(name: "Search", package: "Search"),
             ]

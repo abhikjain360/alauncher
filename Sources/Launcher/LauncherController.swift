@@ -3,6 +3,7 @@ import Calc
 import Core
 import Overlay
 import Search
+import Windows
 
 /// What the controller needs from the panel: `LauncherPanel` in the app, a fake in tests.
 @MainActor
@@ -31,6 +32,8 @@ extension LauncherPanel: LauncherPanelHost {}
 /// The controller's side effects. Tests record them instead of performing them.
 struct LauncherEffects {
     var openApplication: @MainActor (String) -> Void
+    var windows: @MainActor (String) -> [AppWindow]
+    var focusWindow: @MainActor (AppWindow, String) -> Void
     var reveal: @MainActor (String) -> Void
     var copy: @MainActor (String) -> Void
     var flash: @MainActor (String, Bool) -> Void
@@ -52,16 +55,31 @@ struct LauncherEffects {
     static let frecencyQueue = DispatchQueue(label: "alauncher.frecency", qos: .utility)
 
     static func live(runner: ScriptRunner, insert: @escaping InsertText) -> LauncherEffects {
-        LauncherEffects(
-            openApplication: { path in
-                // Activates the app that opens; alauncher itself never activates.
-                let name = (path as NSString).lastPathComponent
-                NSWorkspace.shared.openApplication(at: URL(fileURLWithPath: path), configuration: NSWorkspace.OpenConfiguration()) { _, error in
-                    guard let error else { return }
-                    let message = "couldn't open \(name): \(error.localizedDescription)"
-                    Log.main("launcher: \(message)")
-                    Task { @MainActor in OverlayPill.shared.flash(message, isError: true) }
+        let openApplication: @MainActor (String) -> Void = { path in
+            // Activates the app that opens; alauncher itself never activates.
+            let name = (path as NSString).lastPathComponent
+            NSWorkspace.shared.openApplication(at: URL(fileURLWithPath: path), configuration: NSWorkspace.OpenConfiguration()) { _, error in
+                guard let error else { return }
+                let message = "couldn't open \(name): \(error.localizedDescription)"
+                Log.main("launcher: \(message)")
+                Task { @MainActor in OverlayPill.shared.flash(message, isError: true) }
+            }
+        }
+        return LauncherEffects(
+            openApplication: openApplication,
+            windows: { path in
+                let standardPath = URL(fileURLWithPath: path).standardizedFileURL.path
+                let matches = NSWorkspace.shared.runningApplications.filter { application in
+                    guard let bundleURL = application.bundleURL else { return false }
+                    return URL(fileURLWithPath: bundleURL.path).standardizedFileURL.path == standardPath
                 }
+                let application = matches.first(where: { $0.activationPolicy == .regular }) ?? matches.first
+                guard let application else { return [] }
+                return Windows.windows(of: application)
+            },
+            focusWindow: { window, path in
+                Windows.focus(window)
+                openApplication(path)
             },
             reveal: { path in
                 NSWorkspace.shared.activateFileViewerSelecting([URL(fileURLWithPath: path)])
@@ -516,8 +534,13 @@ final class LauncherController {
         switch entry.action {
         case .app(let path):
             effects.recordLaunch(frecency, entry.item.id)
-            hide()
-            effects.openApplication(path)
+            let windows = effects.windows(path)
+            if windows.count >= 2 {
+                beginWindowChoices(for: entry, path: path, windows: windows)
+            } else {
+                hide()
+                effects.openApplication(path)
+            }
         case .builtIn(let command):
             effects.recordLaunch(frecency, entry.item.id)
             hide()
@@ -637,6 +660,14 @@ final class LauncherController {
 
     // MARK: Choices
 
+    private func beginWindowChoices(for entry: CatalogEntry, path: String, windows: [AppWindow]) {
+        pendingConfirmationID = nil
+        choices = ChoicesSession(title: entry.item.title, path: path, windows: windows, previousQuery: query)
+        query = ""
+        panel?.setText("")
+        showChoicesRound()
+    }
+
     /// Enter or Tab on a `choices = true` command: its first run, with no arguments.
     private func beginChoices(for entry: CatalogEntry, command: CommandSettings, filter: String) {
         effects.recordLaunch(frecency, entry.item.id)
@@ -650,6 +681,7 @@ final class LauncherController {
     /// Runs the command. Until it answers there are no rows, and the field starts from `filter`.
     private func startChoicesRun(arguments: [String], filter: String) {
         guard var session = choices else { return }
+        guard case .script(let invocation) = session.source else { return }
         session.generation += 1
         session.isRunning = true
         let generation = session.generation
@@ -658,7 +690,7 @@ final class LauncherController {
         query = filter
         panel?.setText(filter)
         updateRows(keepSelection: false)
-        let cancel = effects.capture(session.invocation, arguments) { [weak self] result in
+        let cancel = effects.capture(invocation, arguments) { [weak self] result in
             self?.choicesRunFinished(result, generation: generation)
         }
         if choices?.isRunning == true, choices?.generation == generation {
@@ -668,6 +700,7 @@ final class LauncherController {
 
     private func choicesRunFinished(_ result: ScriptRunResult, generation: Int) {
         guard var session = choices, session.isRunning, session.generation == generation else { return }
+        guard case .script = session.source else { return }
         session.isRunning = false
         choices = session
         cancelChoicesRun = nil
@@ -692,7 +725,9 @@ final class LauncherController {
         case .final(let text):
             endChoices(restoreQuery: false)
             hide()
-            effects.deliver(session.invocation, text)
+            if case .script(let invocation) = session.source {
+                effects.deliver(invocation, text)
+            }
         case .round(var round):
             guard !session.isClosed else {
                 endChoices(restoreQuery: false)
@@ -743,8 +778,24 @@ final class LauncherController {
             effects.beep()
             return
         }
+        if case .window(let path, let windows) = session.source {
+            guard let windowIndex = Int(round.items[index].value), windows.indices.contains(windowIndex) else {
+                effects.beep()
+                return
+            }
+            let window = windows[windowIndex]
+            endChoices(restoreQuery: false)
+            hide()
+            effects.focusWindow(window, path)
+            return
+        }
+        guard case .script(var invocation) = session.source else {
+            effects.beep()
+            return
+        }
         session.rounds[session.rounds.count - 1].filter = query
-        session.invocation.targetPID = effects.frontmostPID()
+        invocation.targetPID = effects.frontmostPID()
+        session.source = .script(invocation)
         choices = session
         startChoicesRun(arguments: [round.id, round.items[index].value], filter: "")
     }

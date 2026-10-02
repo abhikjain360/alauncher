@@ -4,6 +4,26 @@ import Core
 import Foundation
 import Overlay
 
+/// One application window that can be listed and raised by the launcher.
+public struct AppWindow: @unchecked Sendable {
+    let element: AXUIElement?
+    public let title: String
+    public let isMinimized: Bool
+
+    init(element: AXUIElement, title: String, isMinimized: Bool) {
+        self.element = element
+        self.title = title
+        self.isMinimized = isMinimized
+    }
+
+    /// A window with no element behind it: what tests list, since they can't reach any app.
+    public init(title: String, isMinimized: Bool = false) {
+        element = nil
+        self.title = title
+        self.isMinimized = isMinimized
+    }
+}
+
 /// Applies Raycast-style window commands to the focused window of the frontmost app.
 @MainActor
 public enum Windows {
@@ -14,6 +34,78 @@ public enum Windows {
     /// Accessibility calls block the caller; a hung app must not hold the main thread for
     /// the default six seconds.
     private static let messagingTimeout: Float = 1
+
+    /// Lists standard windows and dialogs in the order Accessibility reports them.
+    public static func windows(of app: NSRunningApplication) -> [AppWindow] {
+        let application = AXUIElementCreateApplication(app.processIdentifier)
+        AXUIElementSetMessagingTimeout(application, messagingTimeout)
+        var value: AnyObject?
+        let status = AXUIElementCopyAttributeValue(application, kAXWindowsAttribute as CFString, &value)
+        guard status == .success else {
+            logAXFailure("could not read application windows", status: status)
+            return []
+        }
+        guard let value, CFGetTypeID(value) == CFArrayGetTypeID(), let values = value as? [AnyObject] else {
+            logAXFailure("application windows had an unexpected type", status: nil)
+            return []
+        }
+
+        let appName = app.localizedName.flatMap { $0.isEmpty ? nil : $0 }
+            ?? app.bundleURL?.deletingPathExtension().lastPathComponent
+            ?? "Application"
+        var result: [AppWindow] = []
+        result.reserveCapacity(values.count)
+        for value in values {
+            guard CFGetTypeID(value) == AXUIElementGetTypeID() else {
+                continue
+            }
+            let window = value as! AXUIElement
+            AXUIElementSetMessagingTimeout(window, messagingTimeout)
+            // A window that can't say what it is isn't offered; the others still are.
+            guard let role = stringAttribute(window, name: kAXRoleAttribute as CFString) else { continue }
+            let subrole = stringAttribute(window, name: kAXSubroleAttribute as CFString)
+            guard isPickableWindow(role: role, subrole: subrole) else { continue }
+            let title = windowTitle(stringAttribute(window, name: kAXTitleAttribute as CFString), appName: appName)
+            let isMinimized = boolAttribute(window, name: kAXMinimizedAttribute as CFString) ?? false
+            result.append(AppWindow(element: window, title: title, isMinimized: isMinimized))
+        }
+        return result
+    }
+
+    /// Raises a listed window, unminimizing it first when needed.
+    public static func focus(_ window: AppWindow) {
+        guard let element = window.element else {
+            logAXFailure("could not focus a window without an Accessibility element", status: nil)
+            OverlayPill.shared.flash("couldn't focus window", isError: true)
+            return
+        }
+        AXUIElementSetMessagingTimeout(element, messagingTimeout)
+        if window.isMinimized {
+            let status = AXUIElementSetAttributeValue(element, kAXMinimizedAttribute as CFString, kCFBooleanFalse)
+            if status != .success {
+                logAXFailure("could not unminimize a window", status: status)
+            }
+        }
+        let status = AXUIElementPerformAction(element, kAXRaiseAction as CFString)
+        guard status == .success else {
+            logAXFailure("could not raise a window", status: status)
+            OverlayPill.shared.flash("couldn't focus window", isError: true)
+            return
+        }
+    }
+
+    /// The title shown for a window, falling back to the containing app's name.
+    nonisolated static func windowTitle(_ title: String?, appName: String) -> String {
+        guard let title, !title.isEmpty else { return appName }
+        return title
+    }
+
+    /// Sheets, panels and popovers are not separate application windows for the picker.
+    nonisolated static func isPickableWindow(role: String?, subrole: String?) -> Bool {
+        guard role == (kAXWindowRole as String) else { return false }
+        guard let subrole, !subrole.isEmpty else { return true }
+        return subrole == (kAXStandardWindowSubrole as String) || subrole == (kAXDialogSubrole as String)
+    }
 
     public static func perform(_ command: WindowCommand) {
         guard AXIsProcessTrusted() else {
@@ -192,6 +284,14 @@ public enum Windows {
         return (value as? NSNumber)?.boolValue
     }
 
+    private static func stringAttribute(_ element: AXUIElement, name: CFString) -> String? {
+        var value: AnyObject?
+        guard AXUIElementCopyAttributeValue(element, name, &value) == .success,
+              let value, CFGetTypeID(value) == CFStringGetTypeID()
+        else { return nil }
+        return value as? String
+    }
+
     private static func isAttributeSettable(_ element: AXUIElement, name: CFString) -> Bool {
         var settable = DarwinBoolean(false)
         return AXUIElementIsAttributeSettable(element, name, &settable) == .success && settable.boolValue
@@ -240,5 +340,13 @@ public enum Windows {
     private static func fail(_ message: String, logMessage: String) {
         log("window command failed: \(logMessage)")
         OverlayPill.shared.flash(message, isError: true)
+    }
+
+    private static func logAXFailure(_ message: String, status: AXError?) {
+        if let status {
+            log("window picker: \(message) (Accessibility error \(status.rawValue))")
+        } else {
+            log("window picker: \(message)")
+        }
     }
 }
