@@ -50,6 +50,14 @@ public enum Dictation {
         controller.retryLastDictation()
     }
 
+    public static func toggleHandsFree() {
+        guard let controller else {
+            OverlayPill.shared.flash("dictation is off", isError: true)
+            return
+        }
+        controller.toggleHandsFree()
+    }
+
     /// Types `text` the way dictation does, for the launcher: into `targetPID`'s app, which must
     /// still be frontmost, or into whatever app is frontmost when nil. Without permission to post
     /// key events, `copyIfNoPermission` puts it on the clipboard instead (a picked emoji);

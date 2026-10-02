@@ -21,6 +21,7 @@ let usage = """
       cleanup <text>          run the dictation cleanup on text
       ask <question>          ask the Ask backend
       dictate-file <audio>    transcribe, then ask or clean up, and print
+      listen-file <audio>     replay hands-free listening and print events
 
     """
 
@@ -59,7 +60,7 @@ func runCommand(_ arguments: [String]) async -> Int32 {
         return 0
     case "search", "calc", "index":
         return await LauncherCLI.run(arguments, config: loadConfig())
-    case "transcribe", "cleanup", "ask", "dictate-file":
+    case "transcribe", "cleanup", "ask", "dictate-file", "listen-file":
         return await DictationCLI.run(arguments, config: loadConfig())
     default:
         FileHandle.standardError.write(Data("alauncher: unknown command \(arguments.first ?? "")\n\n\(usage)".utf8))

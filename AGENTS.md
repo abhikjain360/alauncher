@@ -30,6 +30,8 @@ It is configured only through text files, so there is no settings UI. The produc
 - the cleanup client (OpenAI-compatible)
 - the Ask runner (`opencode run`)
 - the inserter (types by default; pastes multi-line text)
+- the hands-free listener (Silero VAD segments, wake-phrase head checks)
+- the recording store
 
 ## Commands
 

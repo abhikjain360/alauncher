@@ -110,7 +110,33 @@ public struct DictationSettings: Equatable, Sendable {
     public var removeFillers = true
     public var fillerWords = ["um", "uh", "uhm", "er", "ah", "hmm", "mhm"]
     public var historyLimit = 100
+    public var saveRecordings = false
+    public var recordingsLimit = 200
     public var insert = InsertSettings()
+    public var handsFree = HandsFreeSettings()
+
+    public init() {}
+}
+
+public struct HandsFreeSettings: Equatable, Sendable {
+    public var enabled = false
+    public var wakePhrases = ["hey launcher"]
+    public var offPhrases = ["goodbye launcher"]
+    public var sendPhrases = ["send it"]
+    public var endPause = DurationSetting.seconds(1.5)
+    public var wakeTimeout = DurationSetting.seconds(5)
+    public var followUp = DurationSetting.seconds(10)
+    public var cleanup = CleanupOverride()
+
+    public init() {}
+}
+
+public struct CleanupOverride: Equatable, Sendable {
+    public var model: String?
+    public var reasoning: String? = "high"
+    public var timeout: DurationSetting? = .seconds(30)
+    public var prompt: String?
+    public var extraBody: [String: JSONValue]?
 
     public init() {}
 }
@@ -148,6 +174,16 @@ public struct CleanupSettings: Equatable, Sendable {
     public var apiKey: String?
 
     public init() {}
+
+    public func applying(_ override: CleanupOverride) -> CleanupSettings {
+        var settings = self
+        if let model = override.model { settings.model = model }
+        if let reasoning = override.reasoning { settings.reasoning = reasoning }
+        if let timeout = override.timeout { settings.timeout = timeout }
+        if let prompt = override.prompt { settings.prompt = prompt }
+        if let extraBody = override.extraBody { settings.extraBody = extraBody }
+        return settings
+    }
 
     public static let defaultPrompt = """
         Clean up this speech-to-text transcript so it reads exactly as the speaker meant it.

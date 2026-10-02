@@ -14,6 +14,7 @@ public enum DictationCLI {
           cleanup <text>        run the cleanup model over text (alias: postprocess)
           ask <text>            ask the Ask backend, streaming the answer
           dictate-file <wav>    transcribe, then ask or clean up, then print
+          listen-file <wav>     replay hands-free listening and print events
         """
 
     /// `transcribe <wav>`, `cleanup <text>`, `ask <text>`, `dictate-file <wav>` (transcribe, then
@@ -39,6 +40,9 @@ public enum DictationCLI {
             case "dictate-file":
                 guard !argument.isEmpty else { throw CLIError.usage }
                 try await dictateFile(path: argument, config: config)
+            case "listen-file":
+                guard !argument.isEmpty else { throw CLIError.usage }
+                try await listenFile(path: argument, config: config)
             case "-h", "--help", "help":
                 print(usage)
             default:
@@ -131,6 +135,68 @@ public enum DictationCLI {
         }
     }
 
+    private static func listenFile(path: String, config: Config) async throws {
+        let url = URL(fileURLWithPath: (path as NSString).expandingTildeInPath)
+        guard FileManager.default.fileExists(atPath: url.path) else { throw CLIError.noSuchFile(url.path) }
+        let samples = try Transcriber.samples(fromFile: url)
+        let transcriber = Transcriber(model: config.dictation.model, unloadAfter: .never)
+        let events = HandsFreeEventCollector()
+        let listener = try await HandsFreeListener.load(
+            settings: config.dictation, transcriber: transcriber, onEvent: { _, event in events.append(event) }
+        )
+        var seen = 0
+        var heardListening = false
+        var heardDictation = false
+        var heardNothing = false
+        func report() async throws {
+            for event in events.drain() {
+                switch event {
+                case .segmentStart(let position):
+                    print(String(format: "%.3f segment start", Double(position) / Transcriber.sampleRate))
+                case .segmentEnd(let position):
+                    print(String(format: "%.3f segment end", Double(position) / Transcriber.sampleRate))
+                case .headCheck(let position, let duration, let kind, let transcript, _):
+                    print(String(format: "%.3f head %@ %.3f s: %@", Double(position) / Transcriber.sampleRate, kind.rawValue, duration, transcript))
+                case .listeningStart(let position):
+                    heardListening = true
+                    print(String(format: "%.3f listening start", Double(position) / Transcriber.sampleRate))
+                case .level:
+                    break
+                case .dictationEnd(let audio, let position):
+                    heardDictation = true
+                    let output = try await transcriber.transcribe(audio)
+                    let wakeText = HandsFreePhrases.afterWakePhrase(in: output.text, wakePhrases: config.dictation.handsFree.wakePhrases) ?? output.text
+                    let stripped = HandsFreePhrases.strippingSendPhrase(from: wakeText, sendPhrases: config.dictation.handsFree.sendPhrases)
+                    print(String(format: "%.3f dictation end send=%@: %@", Double(position) / Transcriber.sampleRate, stripped.sendIt ? "true" : "false", output.text))
+                    await listener.openFollowUp()
+                case .nothingHeard(let position):
+                    heardNothing = true
+                    print(String(format: "%.3f nothing heard", Double(position) / Transcriber.sampleRate))
+                case .dropped:
+                    print("dropped")
+                case .failed:
+                    print("voice detector failed")
+                case .sendPhrase(let position):
+                    print(String(format: "%.3f send phrase", Double(position) / Transcriber.sampleRate))
+                case .offPhrase(let position):
+                    print(String(format: "%.3f off phrase", Double(position) / Transcriber.sampleRate))
+                }
+            }
+        }
+        while seen < samples.count {
+            let end = min(samples.count, seen + VadManager.chunkSize)
+            await listener.feed(Array(samples[seen..<end]))
+            seen = end
+            try await report()
+        }
+        await listener.finish()
+        try await report()
+        if heardListening, !heardDictation, !heardNothing {
+            print(String(format: "%.3f nothing heard", Double(samples.count) / Transcriber.sampleRate))
+        }
+        await transcriber.unload()
+    }
+
     static func printError(_ message: String) {
         FileHandle.standardError.write(Data((message + "\n").utf8))
     }
@@ -151,5 +217,24 @@ private final class FirstTextClock: @unchecked Sendable {
         lock.lock()
         defer { lock.unlock() }
         return first.map { $0.timeIntervalSince(start) }
+    }
+}
+
+private final class HandsFreeEventCollector: @unchecked Sendable {
+    private let lock = NSLock()
+    private var events: [HandsFreeListenerEvent] = []
+
+    func append(_ event: HandsFreeListenerEvent) {
+        lock.lock()
+        events.append(event)
+        lock.unlock()
+    }
+
+    func drain() -> [HandsFreeListenerEvent] {
+        lock.lock()
+        defer { lock.unlock() }
+        let result = events
+        events.removeAll(keepingCapacity: true)
+        return result
     }
 }

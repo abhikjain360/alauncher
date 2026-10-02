@@ -6,6 +6,7 @@ public enum PillState: Equatable, Sendable {
     case hidden
     /// Recording; the level meter is driven separately by `OverlayPill.setLevel`.
     case recording
+    case listening
     /// Waiting for the speech model, with an optional detail such as "downloading 42%".
     case loading(String?)
     /// Transcribing or post-processing.
@@ -57,13 +58,13 @@ public final class OverlayPill {
     public func setState(_ state: PillState) {
         guard state != self.state else { return }
         self.state = state
-        if state == .recording { displayedLevel = 0 }
+        if state == .recording || state == .listening { displayedLevel = 0 }
         if flashMessage == nil { render() }
     }
 
     /// Mic level in 0...1 while recording.
     public func setLevel(_ level: Float) {
-        guard state == .recording, flashMessage == nil, panel?.isVisible == true else { return }
+        guard state == .recording || state == .listening, flashMessage == nil, panel?.isVisible == true else { return }
         let target = CGFloat(min(1, max(0, level)))
         // Rise at once, fall gently.
         displayedLevel = max(target, displayedLevel * 0.8)
@@ -97,7 +98,9 @@ public final class OverlayPill {
             stopPulse()
             panel?.orderOut(nil)
         case .recording:
-            showIcons(recording: true)
+            showIcons(recording: true, color: .systemRed)
+        case .listening:
+            showIcons(recording: true, color: .systemBlue)
         case .loading(let detail):
             show(text: detail ?? "loading speech model", dotColor: .systemOrange, tint: nil)
         case .processing:
@@ -105,7 +108,7 @@ public final class OverlayPill {
         }
     }
 
-    private func showIcons(recording: Bool) {
+    private func showIcons(recording: Bool, color: NSColor = .systemRed) {
         let panel = ensurePanel()
         CATransaction.begin()
         CATransaction.setDisableActions(true)
@@ -116,7 +119,7 @@ public final class OverlayPill {
         background.backgroundColor = NSColor(white: 0.08, alpha: 0.86).cgColor
         resize(panel, width: recording ? Metrics.recordingWidth : Metrics.iconWidth)
         if recording {
-            dot.backgroundColor = NSColor.systemRed.cgColor
+            dot.backgroundColor = color.cgColor
             dot.frame = CGRect(x: 14, y: (Metrics.height - Metrics.dotSize) / 2, width: Metrics.dotSize, height: Metrics.dotSize)
             layoutBars()
             stopPulse()

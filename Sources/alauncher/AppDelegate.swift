@@ -75,6 +75,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             },
             BuiltInCommand(title: "Copy last dictation") { Dictation.copyLastDictation() },
             BuiltInCommand(title: "Retry last dictation") { Dictation.retryLastDictation() },
+            BuiltInCommand(title: "Toggle hands-free", keywords: ["hands free", "handsfree", "voice"], symbol: "waveform") { Dictation.toggleHandsFree() },
             BuiltInCommand(title: "Dictation history") { AppDelegate.showHistory() },
             BuiltInCommand(title: "Open logs", subtitle: Paths.logDirectory.path) {
                 NSWorkspace.shared.open(Paths.logDirectory)

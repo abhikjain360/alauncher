@@ -18,7 +18,7 @@ public enum TextProcessing {
         return nil
     }
 
-    private static func rest(of text: String, afterPrefix prefix: String) -> String? {
+    static func rest(of text: String, afterPrefix prefix: String) -> String? {
         let wanted = prefix.lowercased().filter(isWordCharacter)
         guard !wanted.isEmpty else { return nil }
 
@@ -39,7 +39,7 @@ public enum TextProcessing {
         return String(rest).trimmingCharacters(in: .whitespacesAndNewlines)
     }
 
-    private static func isWordCharacter(_ character: Character) -> Bool {
+    static func isWordCharacter(_ character: Character) -> Bool {
         character.isLetter || character.isNumber
     }
 

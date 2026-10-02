@@ -44,6 +44,8 @@ public struct DictationRecord: Codable, Equatable, Sendable {
     public var cleanedText: String?
     public var answer: String?
     public var targetBundleID: String?
+    public var audioFile: String?
+    public var handsFree: Bool?
     public var timings: DictationTimings
     public var outcome: DictationOutcome
     /// A short error such as "cleanup failed: timed out". Never contains the text.
@@ -52,7 +54,7 @@ public struct DictationRecord: Codable, Equatable, Sendable {
     public init(
         id: UUID = UUID(), date: Date = Date(), mode: DictationMode, rawText: String = "", filteredText: String = "",
         cleanedText: String? = nil, answer: String? = nil, targetBundleID: String? = nil,
-        timings: DictationTimings = DictationTimings(), outcome: DictationOutcome, note: String? = nil
+        audioFile: String? = nil, handsFree: Bool? = nil, timings: DictationTimings = DictationTimings(), outcome: DictationOutcome, note: String? = nil
     ) {
         self.id = id
         self.date = date
@@ -62,6 +64,8 @@ public struct DictationRecord: Codable, Equatable, Sendable {
         self.cleanedText = cleanedText
         self.answer = answer
         self.targetBundleID = targetBundleID
+        self.audioFile = audioFile
+        self.handsFree = handsFree
         self.timings = timings
         self.outcome = outcome
         self.note = note

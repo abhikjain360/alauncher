@@ -83,6 +83,8 @@ input_device = ""                       # "" = system default, or a device name 
 remove_fillers = true
 filler_words = ["um", "uh", "uhm", "er", "ah", "hmm", "mhm"]
 history_limit = 100
+save_recordings = false                 # keep each dictation's audio under Application Support/alauncher/recordings
+recordings_limit = 200                  # oldest recordings are deleted past this many
 
 [dictation.insert]
 method = "type"                         # type | paste; text with a newline is always pasted
@@ -94,6 +96,22 @@ paste_restore_delay = "250ms"
 # Per-app insert method, by bundle id.
 [dictation.insert.apps]
 # "com.apple.ScreenSharing" = "paste"
+
+[dictation.hands_free]
+enabled = false                         # keep the mic on and start dictations by voice
+wake_phrases = ["hey launcher"]         # said at the start of what you want typed
+off_phrases = ["goodbye launcher"]      # said on its own, turns hands-free off
+send_phrases = ["send it"]              # presses Return: at the end of a dictation, or on its own within follow_up after one
+end_pause = "1.5s"                      # this much silence ends a dictation
+wake_timeout = "5s"                     # how long to wait for speech after the wake phrase
+follow_up = "10s"                       # after a dictation, the send phrase alone presses Return for this long
+
+[dictation.hands_free.cleanup]           # overrides [cleanup] for hands-free dictations; unset keys keep the [cleanup] value
+# model = "deepseek-reasoner"
+reasoning = "high"
+timeout = "30s"
+# prompt = """..."""
+# extra_body = {}
 
 [cleanup]
 enabled = true

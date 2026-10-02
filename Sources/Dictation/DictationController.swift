@@ -13,7 +13,9 @@ final class DictationSession {
     let keyDownAt: Date
     /// Opened while an Ask thread was showing: a follow-up question.
     let isFollowUp: Bool
+    let isHandsFree: Bool
     var isRaw = false
+    var sendIt = false
     var isRecording = true
     var firstBufferAt: Date?
     var superseded = false
@@ -23,14 +25,18 @@ final class DictationSession {
     var insertionBlocked: String?
     var record: DictationRecord
 
-    init(generation: Int, config: Config, target: NSRunningApplication?, isFollowUp: Bool, keyDownAt: Date = Date()) {
+    init(
+        generation: Int, config: Config, target: NSRunningApplication?, isFollowUp: Bool,
+        isHandsFree: Bool = false, keyDownAt: Date = Date()
+    ) {
         self.generation = generation
         self.keyDownAt = keyDownAt
         self.config = config
         targetBundleID = target?.bundleIdentifier
         targetPID = target?.processIdentifier
         self.isFollowUp = isFollowUp
-        record = DictationRecord(mode: .cleanup, targetBundleID: target?.bundleIdentifier, outcome: .failed)
+        self.isHandsFree = isHandsFree
+        record = DictationRecord(mode: .cleanup, targetBundleID: target?.bundleIdentifier, handsFree: isHandsFree, outcome: .failed)
     }
 }
 
@@ -47,6 +53,7 @@ final class DictationController {
     private let audio = AudioCapture()
     private let transcriber: Transcriber
     private let history: DictationHistory
+    private let recordingStore: RecordingStore
     private let pill = OverlayPill.shared
     private let panel = TextPanel.shared
 
@@ -64,11 +71,18 @@ final class DictationController {
     private var modelStatus: TranscriberStatus = .unloaded
     private var observers: [NSObjectProtocol] = []
     private var running = false
+    private var handsFreeListener: HandsFreeListener?
+    private var handsFreeIsOn = false
+    private var handsFreeStarting = false
+    private var handsFreePaused = false
+    private var handsFreeStartGeneration = 0
+    private var handsFreeEpoch = 0
 
     init(configStore: ConfigStore, history: DictationHistory) {
         self.configStore = configStore
         self.history = history
         config = configStore.current
+        recordingStore = RecordingStore(limit: config.dictation.recordingsLimit)
         let settings = config.dictation
         weak var controller: DictationController?
         transcriber = Transcriber(model: settings.model, unloadAfter: settings.unloadAfter) { status in
@@ -95,6 +109,11 @@ final class DictationController {
         for name in [NSWorkspace.screensDidSleepNotification, NSWorkspace.willSleepNotification, NSWorkspace.sessionDidResignActiveNotification] {
             observers.append(center.addObserver(forName: name, object: nil, queue: .main) { [weak self] notification in
                 MainActor.assumeIsolated { self?.systemInterrupted(notification.name.rawValue) }
+            })
+        }
+        for name in [NSWorkspace.screensDidWakeNotification, NSWorkspace.sessionDidBecomeActiveNotification] {
+            observers.append(center.addObserver(forName: name, object: nil, queue: .main) { [weak self] notification in
+                MainActor.assumeIsolated { self?.systemResumed(notification.name.rawValue) }
             })
         }
     }
@@ -138,6 +157,7 @@ final class DictationController {
         tapRetry = nil
         audio.prepare(deviceSpec: config.dictation.inputDevice)
         log("dictation: listening (hold \(config.dictation.holdKey), raw \(config.dictation.rawChord))")
+        if config.dictation.handsFree.enabled { startHandsFree(reason: "config") }
         return true
     }
 
@@ -165,7 +185,158 @@ final class DictationController {
         keyMonitor?.stop()
         keyMonitor = nil
         _ = dropPendingStart()
+        stopHandsFree(reason: "dictation off", showMessage: true)
         cancelRecording(reason: "dictation stopped", flash: nil)
+    }
+
+    private func startHandsFree(reason: String) {
+        guard running, config.dictation.enabled, !handsFreeIsOn, !handsFreeStarting else { return }
+        handsFreeStarting = true
+        handsFreePaused = false
+        handsFreeStartGeneration += 1
+        let startGeneration = handsFreeStartGeneration
+        let settings = config.dictation
+        transcriber.prepare()
+        DispatchQueue.main.asyncAfter(deadline: .now() + 1) { [weak self] in
+            guard let self, self.handsFreeStarting, self.handsFreeStartGeneration == startGeneration else { return }
+            self.pill.setState(.loading("downloading voice detector"))
+        }
+        let onEvent: @Sendable (Int, HandsFreeListenerEvent) -> Void = { [weak self] epoch, event in
+            DispatchQueue.main.async {
+                MainActor.assumeIsolated { self?.handsFreeEvent(epoch: epoch, event: event) }
+            }
+        }
+        Task { [weak self] in
+            guard let self else { return }
+            do {
+                let listener = try await HandsFreeListener.load(settings: settings, transcriber: self.transcriber, onEvent: onEvent)
+                guard self.running, self.handsFreeStarting, self.handsFreeStartGeneration == startGeneration else {
+                    await self.closeUnstartedHandsFreeListener(listener)
+                    return
+                }
+                guard await self.prepareHandsFreeListener(listener, startGeneration: startGeneration) else { return }
+                let sink: @Sendable ([Float]) -> Void = { [weak listener] samples in listener?.receive(samples) }
+                try self.audio.startListening(deviceSpec: settings.inputDevice, sink: sink)
+                self.handsFreeListener = listener
+                self.handsFreeStarting = false
+                self.handsFreeIsOn = true
+                self.handsFreePaused = false
+                self.pill.setState(.hidden)
+                self.pill.flash("hands-free on", duration: 1)
+                self.log("hands-free: on (\(reason))")
+            } catch {
+                guard self.handsFreeStartGeneration == startGeneration else { return }
+                self.handsFreeStarting = false
+                self.handsFreeIsOn = false
+                self.pill.setState(.hidden)
+                self.pill.flash(Self.logDescription(error), isError: true, duration: 3)
+                self.log("hands-free: off (error)")
+            }
+        }
+    }
+
+    private func prepareHandsFreeListener(_ listener: HandsFreeListener, startGeneration: Int) async -> Bool {
+        while true {
+            guard running, handsFreeStarting, handsFreeStartGeneration == startGeneration else {
+                await closeUnstartedHandsFreeListener(listener)
+                return false
+            }
+            dropHandsFreeRecording()
+            handsFreeEpoch += 1
+            let epoch = handsFreeEpoch
+            await listener.reset(epoch: epoch)
+            guard running, handsFreeStarting, handsFreeStartGeneration == startGeneration else {
+                await closeUnstartedHandsFreeListener(listener)
+                return false
+            }
+            if handsFreeEpoch == epoch { return true }
+        }
+    }
+
+    private func closeUnstartedHandsFreeListener(_ listener: HandsFreeListener) async {
+        dropHandsFreeRecording()
+        handsFreeEpoch += 1
+        let epoch = handsFreeEpoch
+        await listener.close(epoch: epoch)
+        if let current = handsFreeListener { resetHandsFreeListener(current) }
+    }
+
+    private func nextHandsFreeEpoch() -> Int {
+        handsFreeEpoch += 1
+        return handsFreeEpoch
+    }
+
+    private func dropHandsFreeRecording() {
+        guard let session, session.isHandsFree, session.isRecording else { return }
+        session.cancelled = true
+        self.session = nil
+        busy.value = false
+        pill.setState(.hidden)
+    }
+
+    private func resetHandsFreeListener(_ listener: HandsFreeListener? = nil) {
+        dropHandsFreeRecording()
+        guard let listener = listener ?? handsFreeListener else { return }
+        let epoch = nextHandsFreeEpoch()
+        Task { await listener.reset(epoch: epoch) }
+    }
+
+    private func updateHandsFreeListener(settings: DictationSettings) {
+        dropHandsFreeRecording()
+        guard let listener = handsFreeListener else { return }
+        let epoch = nextHandsFreeEpoch()
+        Task { await listener.update(settings: settings, epoch: epoch) }
+    }
+
+    private func closeHandsFreeListener() {
+        dropHandsFreeRecording()
+        guard let listener = handsFreeListener else { return }
+        handsFreeListener = nil
+        let epoch = nextHandsFreeEpoch()
+        Task { await listener.close(epoch: epoch) }
+    }
+
+    private func stopHandsFree(reason: String, showMessage: Bool) {
+        guard handsFreeIsOn || handsFreeStarting else { return }
+        handsFreeStartGeneration += 1
+        handsFreeStarting = false
+        handsFreeIsOn = false
+        handsFreePaused = false
+        audio.stopListening()
+        closeHandsFreeListener()
+        if showMessage {
+            pill.flash("hands-free off", duration: 1)
+        } else {
+            pill.setState(.hidden)
+        }
+        log("hands-free: off (\(reason))")
+    }
+
+    private func restartHandsFreeAudio() {
+        guard let listener = handsFreeListener, handsFreeIsOn, !handsFreePaused else { return }
+        audio.stopListening()
+        resetHandsFreeListener(listener)
+        let sink: @Sendable ([Float]) -> Void = { [weak listener] samples in listener?.receive(samples) }
+        do {
+            try audio.startListening(deviceSpec: config.dictation.inputDevice, sink: sink)
+        } catch {
+            stopHandsFree(reason: "error", showMessage: true)
+            pill.flash(Self.logDescription(error), isError: true, duration: 3)
+        }
+    }
+
+    private func systemResumed(_ reason: String) {
+        guard handsFreeIsOn, handsFreePaused, let listener = handsFreeListener, !audio.isRecording else { return }
+        do {
+            let sink: @Sendable ([Float]) -> Void = { [weak listener] samples in listener?.receive(samples) }
+            try audio.startListening(deviceSpec: config.dictation.inputDevice, sink: sink)
+            handsFreePaused = false
+            resetHandsFreeListener(listener)
+            log("hands-free: resumed (\(reason))")
+        } catch {
+            stopHandsFree(reason: "error", showMessage: true)
+            pill.flash(Self.logDescription(error), isError: true, duration: 3)
+        }
     }
 
     private func apply(_ new: Config) {
@@ -173,15 +344,23 @@ final class DictationController {
         let old = config
         config = new
         history.limit = new.dictation.historyLimit
+        recordingStore.update(limit: new.dictation.recordingsLimit)
         if new.dictation.enabled != old.dictation.enabled {
             new.dictation.enabled ? startListening() : stopListening()
+        }
+        if new.dictation.handsFree.enabled != old.dictation.handsFree.enabled, new.dictation.enabled {
+            new.dictation.handsFree.enabled ? startHandsFree(reason: "config") : stopHandsFree(reason: "config", showMessage: true)
+        } else if new.dictation.handsFree != old.dictation.handsFree, handsFreeIsOn {
+            updateHandsFreeListener(settings: new.dictation)
         }
         keyMonitor?.update(bindings: KeyStateMachine.Bindings(new.dictation))
         if new.dictation.model != old.dictation.model || new.dictation.unloadAfter != old.dictation.unloadAfter {
             let transcriber = self.transcriber
             Task { await transcriber.update(model: new.dictation.model, unloadAfter: new.dictation.unloadAfter) }
         }
-        if new.dictation.inputDevice != old.dictation.inputDevice, !audio.isRecording {
+        if new.dictation.inputDevice != old.dictation.inputDevice, handsFreeIsOn, !handsFreePaused, !audio.isRecording {
+            restartHandsFreeAudio()
+        } else if new.dictation.inputDevice != old.dictation.inputDevice, !audio.isInUse {
             audio.prepare(deviceSpec: new.dictation.inputDevice)
         }
     }
@@ -243,7 +422,12 @@ final class DictationController {
     private func beginRecording(keyDownAt: Date) {
         if let previous = session {
             if previous.isRecording {
-                audio.cancel()
+                previous.superseded = true
+                if previous.isHandsFree {
+                    resetHandsFreeListener()
+                } else {
+                    audio.cancel()
+                }
             } else {
                 // Its transcript still reaches history when the transcription finishes.
                 previous.superseded = true
@@ -305,6 +489,31 @@ final class DictationController {
         startReleasePoll()
     }
 
+    private func beginHandsFreeRecording() {
+        guard handsFreeIsOn, !handsFreePaused, session?.isRecording != true else { return }
+        if let previous = session, !previous.isRecording {
+            previous.superseded = true
+            processing?.cancel()
+            askRunner?.cancel()
+        }
+        busy.value = false
+        let frozen = configStore.current
+        config = frozen
+        let followUp = panel.isOpen && askOwnsPanel && askRunner != nil
+        if panel.isOpen, !followUp { panel.close() }
+        generation += 1
+        let session = DictationSession(
+            generation: generation, config: frozen,
+            target: NSWorkspace.shared.frontmostApplication, isFollowUp: followUp,
+            isHandsFree: true
+        )
+        self.session = session
+        transcriber.prepare()
+        if frozen.cleanup.enabled || frozen.ask.backend == .direct {
+            CleanupClient.shared.warmUp(baseURL: frozen.cleanup.baseURL)
+        }
+    }
+
     /// Catches a hold-key release the tap never saw (secure input can hide it).
     private func startReleasePoll() {
         releasePoll?.invalidate()
@@ -333,6 +542,11 @@ final class DictationController {
 
     private func systemInterrupted(_ reason: String) {
         _ = dropPendingStart()
+        if handsFreeIsOn, !handsFreePaused {
+            handsFreePaused = true
+            audio.stopListening()
+            resetHandsFreeListener()
+        }
         guard let session else { return }
         if session.isRecording {
             keyMonitor?.endRecording()
@@ -348,6 +562,7 @@ final class DictationController {
         releasePoll?.invalidate()
         releasePoll = nil
         audio.cancel()
+        if handsFreeListener != nil { resetHandsFreeListener() }
         self.session = nil
         log("dictation #\(session.generation): recording cancelled (\(reason))")
         if let flash {
@@ -377,6 +592,7 @@ final class DictationController {
         releasePoll?.invalidate()
         releasePoll = nil
         let capture = audio.stop()
+        if handsFreeListener != nil { resetHandsFreeListener() }
         let pressed = Date().timeIntervalSince(session.keyDownAt)
         session.record.timings.recording = capture.duration
         session.record.timings.firstBuffer = session.firstBufferAt.map { $0.timeIntervalSince(session.keyDownAt) }
@@ -395,6 +611,12 @@ final class DictationController {
             return
         }
 
+        if session.config.dictation.saveRecordings {
+            let name = RecordingStore.fileName(generation: session.generation)
+            session.record.audioFile = name
+            recordingStore.save(capture.samples, name: name)
+        }
+
         busy.value = true
         pillShowsModel = false
         if case .downloading = modelStatus {
@@ -404,6 +626,94 @@ final class DictationController {
         }
         let samples = capture.samples
         processing = Task { [weak self] in await self?.process(session, samples: samples) }
+    }
+
+    private func finishHandsFreeRecording(_ samples: [Float]) {
+        guard let session, session.isHandsFree, session.isRecording else { return }
+        session.isRecording = false
+        let capture = Self.captureResult(samples)
+        session.record.timings.recording = capture.duration
+        let pressed = capture.duration
+        if pressed < (session.config.dictation.minDuration.timeInterval ?? 0) || capture.samples.isEmpty {
+            log(String(format: "dictation #%d: dropped, recorded %.2f s", session.generation, pressed))
+            self.session = nil
+            pill.setState(.hidden)
+            return
+        }
+        if capture.peakWindowDB < AudioLevels.silenceThresholdDB {
+            log(String(format: "dictation #%d: dropped as silent (peak %.1f dBFS)", session.generation, capture.peakWindowDB))
+            self.session = nil
+            pill.setState(.hidden)
+            pill.flash("no speech", duration: 1)
+            return
+        }
+        if session.config.dictation.saveRecordings {
+            let name = RecordingStore.fileName(generation: session.generation)
+            session.record.audioFile = name
+            recordingStore.save(capture.samples, name: name)
+        }
+        busy.value = true
+        pillShowsModel = false
+        if case .downloading = modelStatus {
+            pill.setState(.loading("downloading speech model"))
+        } else {
+            pill.setState(.processing)
+        }
+        processing = Task { [weak self] in await self?.process(session, samples: capture.samples) }
+    }
+
+    private static func captureResult(_ samples: [Float]) -> CaptureResult {
+        let accumulator = SampleAccumulator(maxDuration: nil)
+        samples.withUnsafeBufferPointer { _ = accumulator.append($0) }
+        return accumulator.finish()
+    }
+
+    private func handsFreeEvent(epoch: Int, event: HandsFreeListenerEvent) {
+        guard epoch >= handsFreeEpoch else { return }
+        switch event {
+        case .segmentStart:
+            break
+        case .segmentEnd:
+            break
+        case .headCheck(_, let duration, let kind, _, _):
+            if kind == .wake {
+                log(String(format: "hands-free: wake detected, head check %.3f s", duration))
+                beginHandsFreeRecording()
+            }
+        case .listeningStart:
+            guard let session, session.isHandsFree, session.isRecording else { return }
+            pillShowsModel = false
+            pill.setState(.listening)
+        case .level(let level):
+            guard session?.isHandsFree == true, session?.isRecording == true else { return }
+            pill.setLevel(level)
+        case .dictationEnd(let samples, _):
+            finishHandsFreeRecording(samples)
+        case .nothingHeard:
+            guard let session, session.isHandsFree, session.isRecording else { return }
+            session.isRecording = false
+            self.session = nil
+            busy.value = false
+            pill.setState(.hidden)
+            pill.flash("nothing heard", duration: 1)
+            log("hands-free: nothing heard")
+        case .dropped:
+            break
+        case .sendPhrase:
+            Task {
+                let pressed = await Inserter.shared.pressReturn(targetPID: nil)
+                if pressed {
+                    log("hands-free: send phrase pressed Return")
+                } else {
+                    pill.flash("couldn't press Return", isError: true)
+                }
+            }
+        case .offPhrase:
+            stopHandsFree(reason: "voice", showMessage: true)
+        case .failed:
+            stopHandsFree(reason: "error", showMessage: false)
+            pill.flash("voice detector failed", isError: true, duration: 3)
+        }
     }
 
     private func isCurrent(_ session: DictationSession) -> Bool {
@@ -428,7 +738,26 @@ final class DictationController {
         pill.setState(.processing)
 
         let settings = session.config.dictation
-        let filtered = settings.removeFillers ? TextProcessing.removeFillers(output.text, fillers: settings.fillerWords) : output.text
+        var text = output.text
+        if session.isHandsFree {
+            if let rest = HandsFreePhrases.afterWakePhrase(in: text, wakePhrases: settings.handsFree.wakePhrases) {
+                text = rest
+            }
+            let stripped = HandsFreePhrases.strippingSendPhrase(from: text, sendPhrases: settings.handsFree.sendPhrases)
+            text = stripped.text
+            session.sendIt = stripped.sendIt
+            if HandsFreePhrases.isOnly(text, phrases: settings.handsFree.offPhrases) {
+                stopHandsFree(reason: "voice", showMessage: true)
+                session.record.filteredText = text
+                return end(session, outcome: .droppedEmpty)
+            }
+            if TextProcessing.isBlank(text), session.sendIt {
+                let pressed = await Inserter.shared.pressReturn(targetPID: session.targetPID)
+                if !pressed { pill.flash("couldn't press Return", isError: true) }
+                return end(session, outcome: pressed ? .inserted : .failed)
+            }
+        }
+        let filtered = settings.removeFillers ? TextProcessing.removeFillers(text, fillers: settings.fillerWords) : text
         session.record.filteredText = filtered
         guard !TextProcessing.isBlank(filtered) else {
             pill.flash("no speech", duration: 1)
@@ -448,7 +777,7 @@ final class DictationController {
 
         let cleanupStart = Date()
         do {
-            let cleaned = try await CleanupClient.shared.cleanUp(filtered, settings: session.config.cleanup)
+            let cleaned = try await CleanupClient.shared.cleanUp(filtered, settings: cleanupSettings(for: session))
             session.record.timings.postProcessing = Date().timeIntervalSince(cleanupStart)
             guard isCurrent(session) else { return end(session, outcome: session.superseded ? .superseded : .cancelled) }
             session.record.cleanedText = cleaned
@@ -507,6 +836,11 @@ final class DictationController {
         }
     }
 
+    private func cleanupSettings(for session: DictationSession) -> CleanupSettings {
+        guard session.isHandsFree else { return session.config.cleanup }
+        return session.config.cleanup.applying(session.config.dictation.handsFree.cleanup)
+    }
+
     private func askPanelClosed() {
         askRunner?.cancel()
         askRunner = nil
@@ -553,6 +887,17 @@ final class DictationController {
                 if result.method == .paste, result.restored == false, session.config.dictation.insert.pasteRestore {
                     note = [note, "clipboard not restored"].compactMap { $0 }.joined(separator: "; ")
                 }
+                if handsFreeIsOn, let listener = handsFreeListener {
+                    await listener.openFollowUp()
+                }
+                if session.sendIt {
+                    if await !Inserter.shared.pressReturn(targetPID: session.targetPID) {
+                        note = [note, "couldn't press Return"].compactMap { $0 }.joined(separator: "; ")
+                        pill.flash("couldn't press Return", isError: true)
+                    } else {
+                        log("hands-free: send phrase pressed Return")
+                    }
+                }
                 return end(session, outcome: .inserted, note: note)
             case .cancelled?:
                 return end(session, outcome: session.superseded ? .superseded : .cancelled)
@@ -594,7 +939,7 @@ final class DictationController {
         let timings = session.record.timings
         func seconds(_ value: Double?) -> String { value.map { String(format: "%.3f", $0) } ?? "-" }
         log("dictation #\(session.generation): \(session.record.mode.rawValue) \(outcome.rawValue)"
-            + " firstBuffer=\(seconds(timings.firstBuffer)) recording=\(seconds(timings.recording))"
+            + " handsFree=\(session.isHandsFree) firstBuffer=\(seconds(timings.firstBuffer)) recording=\(seconds(timings.recording))"
             + " modelWait=\(seconds(timings.modelWait)) transcribe=\(seconds(timings.transcription))"
             + " llm=\(seconds(timings.postProcessing)) insert=\(seconds(timings.insertion))"
             + " rawChars=\(session.record.rawText.count) outChars=\((session.record.answer ?? session.record.cleanedText ?? session.record.filteredText).count)")
@@ -656,6 +1001,18 @@ final class DictationController {
 
     // MARK: - Launcher commands
 
+    func toggleHandsFree() {
+        guard config.dictation.enabled else {
+            pill.flash("dictation is off", isError: true)
+            return
+        }
+        if handsFreeIsOn || handsFreeStarting {
+            stopHandsFree(reason: "command", showMessage: true)
+        } else {
+            startHandsFree(reason: "command")
+        }
+    }
+
     func copyLastDictation() {
         guard let record = history.records.last else {
             pill.flash("no dictation yet", duration: 1.5)
@@ -680,7 +1037,8 @@ final class DictationController {
         generation += 1
         let frozen = configStore.current
         let session = DictationSession(
-            generation: generation, config: frozen, target: NSWorkspace.shared.frontmostApplication, isFollowUp: false
+            generation: generation, config: frozen, target: NSWorkspace.shared.frontmostApplication,
+            isFollowUp: false, isHandsFree: last.handsFree == true
         )
         session.isRecording = false
         session.isRaw = last.mode == .raw
@@ -703,7 +1061,7 @@ final class DictationController {
         }
         let start = Date()
         do {
-            let cleaned = try await CleanupClient.shared.cleanUp(filtered, settings: session.config.cleanup)
+            let cleaned = try await CleanupClient.shared.cleanUp(filtered, settings: cleanupSettings(for: session))
             session.record.timings.postProcessing = Date().timeIntervalSince(start)
             guard isCurrent(session) else { return end(session, outcome: .cancelled) }
             session.record.cleanedText = cleaned

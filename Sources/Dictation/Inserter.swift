@@ -158,6 +158,25 @@ final class Inserter {
         return result
     }
 
+    func pressReturn(targetPID: pid_t?) async -> Bool {
+        _ = await waitForModifierRelease()
+        guard !Task.isCancelled, canPostEvents,
+              let front = NSWorkspace.shared.frontmostApplication,
+              targetPID == nil || front.processIdentifier == targetPID,
+              !ownWindowIsKey() else { return false }
+        let source = CGEventSource(stateID: .hidSystemState)
+        source?.userData = DictationConstants.eventUserData
+        for down in [true, false] {
+            guard let event = CGEvent(keyboardEventSource: source, virtualKey: CGKeyCode(kVK_Return), keyDown: down) else {
+                return false
+            }
+            event.flags = []
+            event.setIntegerValueField(.eventSourceUserData, value: DictationConstants.eventUserData)
+            event.post(tap: .cghidEventTap)
+        }
+        return true
+    }
+
     /// Whether `pid` is still frontmost and none of our windows has the keyboard.
     private func targetIsFront(_ pid: pid_t) -> Bool {
         NSWorkspace.shared.frontmostApplication?.processIdentifier == pid && !ownWindowIsKey()

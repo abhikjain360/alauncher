@@ -100,6 +100,57 @@ private func defaultFixture() throws -> String {
     #expect(config.dictation.insert.apps == ["com.example.App": .paste])
 }
 
+@Test func handsFreeAndRecordingSettingsDecode() throws {
+    let config = try ConfigLoader.load(configText: """
+        [dictation]
+        save_recordings = true
+        recordings_limit = 7
+
+        [dictation.hands_free]
+        enabled = true
+        wake_phrases = ["hey, launcher"]
+        off_phrases = ["goodbye launcher"]
+        send_phrases = ["send it"]
+        end_pause = "2s"
+        wake_timeout = "6s"
+        follow_up = "11s"
+        """, secretsText: nil)
+    #expect(config.dictation.saveRecordings)
+    #expect(config.dictation.recordingsLimit == 7)
+    #expect(config.dictation.handsFree.enabled)
+    #expect(config.dictation.handsFree.wakePhrases == ["hey, launcher"])
+    #expect(config.dictation.handsFree.offPhrases == ["goodbye launcher"])
+    #expect(config.dictation.handsFree.sendPhrases == ["send it"])
+    #expect(config.dictation.handsFree.endPause == .seconds(2))
+    #expect(config.dictation.handsFree.wakeTimeout == .seconds(6))
+    #expect(config.dictation.handsFree.followUp == .seconds(11))
+}
+
+@Test func handsFreeCleanupOverrideParsesAndApplies() throws {
+    let config = try ConfigLoader.load(configText: """
+        [cleanup]
+        base_url = "https://cleanup.example/v1"
+        model = "base-model"
+        reasoning = "low"
+        timeout = "12s"
+        prompt = "base prompt"
+
+        [cleanup.extra_body]
+        temperature = 0.2
+
+        [dictation.hands_free.cleanup]
+        model = "deepseek-reasoner"
+        """, secretsText: "[cleanup]\napi_key = \"test-key\"\n")
+    let settings = config.cleanup.applying(config.dictation.handsFree.cleanup)
+    #expect(settings.model == "deepseek-reasoner")
+    #expect(settings.reasoning == "high")
+    #expect(settings.timeout == .seconds(30))
+    #expect(settings.prompt == "base prompt")
+    #expect(settings.extraBody == ["temperature": .number(0.2)])
+    #expect(settings.baseURL == "https://cleanup.example/v1")
+    #expect(settings.apiKey == "test-key")
+}
+
 @Test func commandsTakeChoicesAndTypeMode() throws {
     let config = try ConfigLoader.load(configText: """
         [[launcher.commands]]

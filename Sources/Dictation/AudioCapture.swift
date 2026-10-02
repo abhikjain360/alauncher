@@ -182,18 +182,113 @@ final class AudioCapture {
     private var engineDeviceSpec: String?
     private var accumulator: SampleAccumulator?
     private var callbacks: Callbacks?
+    private var listeningSink: (@Sendable ([Float]) -> Void)?
+    private let targetBox = AudioTargetBox()
+    private var engineRunning = false
     private var configurationObserver: NSObjectProtocol?
 
     var isRecording: Bool { accumulator != nil }
+    var isListening: Bool { listeningSink != nil }
+    var isInUse: Bool { engineRunning }
 
     /// Selects the device and prepares the engine ahead of the first recording.
     func prepare(deviceSpec: String) {
-        guard !isRecording else { return }
+        guard !isInUse else { return }
         configureEngine(deviceSpec: deviceSpec)
         prepareEngine()
     }
 
     func start(deviceSpec: String, maxDuration: TimeInterval?, callbacks: Callbacks) throws {
+        try checkPermission()
+        if isRecording { _ = stop() }
+        let accumulator = SampleAccumulator(maxDuration: maxDuration)
+        self.accumulator = accumulator
+        self.callbacks = callbacks
+        let target = AudioTarget(accumulator: accumulator, callbacks: callbacks, sink: nil)
+        if engineRunning {
+            targetBox.set(target)
+            return
+        }
+        configureEngine(deviceSpec: deviceSpec)
+        targetBox.set(target)
+        do {
+            try installTapAndStart()
+        } catch {
+            self.accumulator = nil
+            self.callbacks = nil
+            targetBox.set(nil)
+            engine.inputNode.removeTap(onBus: 0)
+            throw error
+        }
+    }
+
+    func startListening(deviceSpec: String, sink: @escaping @Sendable ([Float]) -> Void) throws {
+        try checkPermission()
+        listeningSink = sink
+        if isRecording {
+            return
+        }
+        if engineRunning, engineDeviceSpec != deviceSpec {
+            halt()
+        }
+        let target = AudioTarget(accumulator: nil, callbacks: nil, sink: sink)
+        targetBox.set(target)
+        if engineRunning {
+            return
+        }
+        configureEngine(deviceSpec: deviceSpec)
+        do {
+            try installTapAndStart()
+        } catch {
+            listeningSink = nil
+            targetBox.set(nil)
+            throw error
+        }
+    }
+
+    func stopListening() {
+        listeningSink = nil
+        guard !isRecording else { return }
+        targetBox.set(nil)
+        halt()
+    }
+
+    /// Stops and returns the recording, then re-prepares, since `stop()` releases the engine's
+    /// prepared resources.
+    func stop() -> CaptureResult {
+        let result = accumulator?.finish() ?? CaptureResult(samples: [], peakWindowDB: -.infinity)
+        accumulator = nil
+        callbacks = nil
+        if let listeningSink {
+            targetBox.set(AudioTarget(accumulator: nil, callbacks: nil, sink: listeningSink))
+        } else {
+            targetBox.set(nil)
+            halt()
+        }
+        return result
+    }
+
+    func cancel() {
+        accumulator = nil
+        callbacks = nil
+        if let listeningSink {
+            targetBox.set(AudioTarget(accumulator: nil, callbacks: nil, sink: listeningSink))
+        } else {
+            targetBox.set(nil)
+            halt()
+        }
+    }
+
+    private func halt() {
+        guard engineRunning else { return }
+        targetBox.set(nil)
+        engineRunning = false
+        engine.stop()
+        engine.inputNode.removeTap(onBus: 0)
+        prepareEngine()
+    }
+
+    private func checkPermission() throws {
         switch AVCaptureDevice.authorizationStatus(for: .audio) {
         case .authorized: break
         case .notDetermined:
@@ -201,40 +296,6 @@ final class AudioCapture {
             throw CaptureError.microphonePermissionPending
         default: throw CaptureError.microphoneDenied
         }
-        if isRecording { _ = stop() }
-        configureEngine(deviceSpec: deviceSpec)
-        let accumulator = SampleAccumulator(maxDuration: maxDuration)
-        self.accumulator = accumulator
-        self.callbacks = callbacks
-        do {
-            try installTapAndStart(accumulator: accumulator, callbacks: callbacks)
-        } catch {
-            self.accumulator = nil
-            self.callbacks = nil
-            engine.inputNode.removeTap(onBus: 0)
-            throw error
-        }
-    }
-
-    /// Stops and returns the recording, then re-prepares, since `stop()` releases the engine's
-    /// prepared resources.
-    func stop() -> CaptureResult {
-        let result = accumulator?.finish() ?? CaptureResult(samples: [], peakWindowDB: -.infinity)
-        halt()
-        return result
-    }
-
-    func cancel() {
-        halt()
-    }
-
-    private func halt() {
-        guard accumulator != nil else { return }
-        accumulator = nil
-        callbacks = nil
-        engine.stop()
-        engine.inputNode.removeTap(onBus: 0)
-        prepareEngine()
     }
 
     /// `prepare()` raises an Objective-C exception, which Swift can't catch, on an engine whose
@@ -280,7 +341,7 @@ final class AudioCapture {
         }
     }
 
-    private func installTapAndStart(accumulator: SampleAccumulator, callbacks: Callbacks) throws {
+    private func installTapAndStart() throws {
         let input = engine.inputNode
         let format = input.outputFormat(forBus: 0)
         guard format.channelCount > 0, format.sampleRate > 0 else { throw CaptureError.noInputDevice }
@@ -289,11 +350,12 @@ final class AudioCapture {
         converter.downmix = true
         input.installTap(
             onBus: 0, bufferSize: 1024, format: format,
-            block: Self.tapBlock(converter: converter, target: target, accumulator: accumulator, callbacks: callbacks)
+            block: Self.tapBlock(converter: converter, target: target, targetBox: targetBox)
         )
         engine.prepare()
         do {
             try engine.start()
+            engineRunning = true
         } catch {
             throw CaptureError.engineFailed(error.localizedDescription)
         }
@@ -302,14 +364,15 @@ final class AudioCapture {
     /// Device or format change: the engine has stopped. Rebuild the converter and tap and carry on
     /// with the same recording.
     private func configurationChanged() {
-        guard let accumulator, let callbacks else {
+        guard targetBox.get() != nil else {
             prepareEngine()
             return
         }
         log("audio: configuration changed during a recording; restarting input")
         engine.inputNode.removeTap(onBus: 0)
         do {
-            try installTapAndStart(accumulator: accumulator, callbacks: callbacks)
+            engineRunning = false
+            try installTapAndStart()
         } catch {
             log("audio: restart failed: \(error)")
         }
@@ -317,9 +380,8 @@ final class AudioCapture {
 
     /// Built outside the main actor: the block runs on the audio thread.
     private nonisolated static func tapBlock(
-        converter: AVAudioConverter, target: AVAudioFormat, accumulator: SampleAccumulator, callbacks: Callbacks
+        converter: AVAudioConverter, target: AVAudioFormat, targetBox: AudioTargetBox
     ) -> AVAudioNodeTapBlock {
-        let state = TapState()
         return { buffer, _ in
             let ratio = target.sampleRate / buffer.format.sampleRate
             let capacity = AVAudioFrameCount(Double(buffer.frameLength) * ratio) + 64
@@ -337,22 +399,56 @@ final class AudioCapture {
             }
             guard status != .error, output.frameLength > 0, let channel = output.floatChannelData?[0] else { return }
             let chunk = UnsafeBufferPointer(start: channel, count: Int(output.frameLength))
-            let limitReached = accumulator.append(chunk)
-
-            if !state.sawFirstBuffer {
-                state.sawFirstBuffer = true
-                DispatchQueue.main.async { MainActor.assumeIsolated { callbacks.onFirstBuffer() } }
+            guard let target = targetBox.get() else { return }
+            if let accumulator = target.accumulator, let callbacks = target.callbacks {
+                let limitReached = accumulator.append(chunk)
+                if !target.state.sawFirstBuffer {
+                    target.state.sawFirstBuffer = true
+                    DispatchQueue.main.async { MainActor.assumeIsolated { callbacks.onFirstBuffer() } }
+                }
+                let now = CACurrentMediaTime()
+                if now - target.state.lastLevelTime >= AudioLevels.levelInterval {
+                    target.state.lastLevelTime = now
+                    let level = AudioLevels.normalizedLevel(rms: AudioLevels.rms(chunk))
+                    DispatchQueue.main.async { MainActor.assumeIsolated { callbacks.onLevel(level) } }
+                }
+                if limitReached {
+                    DispatchQueue.main.async { MainActor.assumeIsolated { callbacks.onLimit() } }
+                }
+                return
             }
-            let now = CACurrentMediaTime()
-            if now - state.lastLevelTime >= AudioLevels.levelInterval {
-                state.lastLevelTime = now
-                let level = AudioLevels.normalizedLevel(rms: AudioLevels.rms(chunk))
-                DispatchQueue.main.async { MainActor.assumeIsolated { callbacks.onLevel(level) } }
-            }
-            if limitReached {
-                DispatchQueue.main.async { MainActor.assumeIsolated { callbacks.onLimit() } }
-            }
+            target.sink?(Array(chunk))
         }
+    }
+}
+
+private final class AudioTargetBox: @unchecked Sendable {
+    private let lock = NSLock()
+    private var target: AudioTarget?
+
+    func get() -> AudioTarget? {
+        lock.lock()
+        defer { lock.unlock() }
+        return target
+    }
+
+    func set(_ target: AudioTarget?) {
+        lock.lock()
+        self.target = target
+        lock.unlock()
+    }
+}
+
+private final class AudioTarget: @unchecked Sendable {
+    let accumulator: SampleAccumulator?
+    let callbacks: AudioCapture.Callbacks?
+    let sink: (@Sendable ([Float]) -> Void)?
+    let state = TapState()
+
+    init(accumulator: SampleAccumulator?, callbacks: AudioCapture.Callbacks?, sink: (@Sendable ([Float]) -> Void)?) {
+        self.accumulator = accumulator
+        self.callbacks = callbacks
+        self.sink = sink
     }
 }
 

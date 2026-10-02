@@ -93,13 +93,26 @@ enum ConfigParsing {
             try validateKeys(table, allowed: [
                 "enabled", "hold_key", "raw_chord", "cancel_key", "model", "unload_after",
                 "min_duration", "start_delay", "max_duration", "input_device", "remove_fillers", "filler_words",
-                "history_limit", "insert",
+                "history_limit", "save_recordings", "recordings_limit", "insert", "hands_free",
             ], path: "dictation")
             if table.contains(key: "insert") {
                 let insert = try requiredTable(table, key: "insert", path: "dictation.insert")
                 try validateKeys(insert, allowed: ["method", "type_chunk", "type_delay", "paste_restore", "paste_restore_delay", "apps"], path: "dictation.insert")
                 if insert.contains(key: "apps") {
                     _ = try requiredTable(insert, key: "apps", path: "dictation.insert.apps")
+                }
+            }
+            if table.contains(key: "hands_free") {
+                let handsFree = try requiredTable(table, key: "hands_free", path: "dictation.hands_free")
+                try validateKeys(handsFree, allowed: [
+                    "enabled", "wake_phrases", "off_phrases", "send_phrases", "end_pause", "wake_timeout", "follow_up", "cleanup",
+                ], path: "dictation.hands_free")
+                if handsFree.contains(key: "cleanup") {
+                    let cleanup = try requiredTable(handsFree, key: "cleanup", path: "dictation.hands_free.cleanup")
+                    try validateKeys(cleanup, allowed: ["model", "reasoning", "timeout", "prompt", "extra_body"], path: "dictation.hands_free.cleanup")
+                    if cleanup.contains(key: "extra_body") {
+                        _ = try requiredTable(cleanup, key: "extra_body", path: "dictation.hands_free.cleanup.extra_body")
+                    }
                 }
             }
         }
@@ -221,6 +234,13 @@ enum ConfigParsing {
                 guard value >= 0 else { throw ConfigError("dictation.history_limit: must be >= 0") }
                 config.dictation.historyLimit = value
             }
+            if let value = try optionalBool(dictation, key: "save_recordings", path: "dictation.save_recordings") {
+                config.dictation.saveRecordings = value
+            }
+            if let value = try optionalInt(dictation, key: "recordings_limit", path: "dictation.recordings_limit") {
+                guard value >= 0 else { throw ConfigError("dictation.recordings_limit: must be >= 0") }
+                config.dictation.recordingsLimit = value
+            }
 
             if dictation.contains(key: "insert") {
                 let insert = try requiredTable(dictation, key: "insert", path: "dictation.insert")
@@ -240,6 +260,51 @@ enum ConfigParsing {
                 if insert.contains(key: "apps") {
                     let apps = try requiredTable(insert, key: "apps", path: "dictation.insert.apps")
                     config.dictation.insert.apps = try insertMethodMap(apps, path: "dictation.insert.apps")
+                }
+            }
+            if dictation.contains(key: "hands_free") {
+                let handsFree = try requiredTable(dictation, key: "hands_free", path: "dictation.hands_free")
+                if let value = try optionalBool(handsFree, key: "enabled", path: "dictation.hands_free.enabled") {
+                    config.dictation.handsFree.enabled = value
+                }
+                if handsFree.contains(key: "wake_phrases") {
+                    config.dictation.handsFree.wakePhrases = try phraseArray(handsFree, key: "wake_phrases", path: "dictation.hands_free.wake_phrases")
+                }
+                if handsFree.contains(key: "off_phrases") {
+                    config.dictation.handsFree.offPhrases = try phraseArray(handsFree, key: "off_phrases", path: "dictation.hands_free.off_phrases")
+                }
+                if handsFree.contains(key: "send_phrases") {
+                    config.dictation.handsFree.sendPhrases = try phraseArray(handsFree, key: "send_phrases", path: "dictation.hands_free.send_phrases")
+                }
+                if let value = try optionalDuration(handsFree, key: "end_pause", path: "dictation.hands_free.end_pause") {
+                    config.dictation.handsFree.endPause = value
+                }
+                if let value = try optionalDuration(handsFree, key: "wake_timeout", path: "dictation.hands_free.wake_timeout") {
+                    config.dictation.handsFree.wakeTimeout = value
+                }
+                if let value = try optionalDuration(handsFree, key: "follow_up", path: "dictation.hands_free.follow_up") {
+                    config.dictation.handsFree.followUp = value
+                }
+                if handsFree.contains(key: "cleanup") {
+                    let cleanup = try requiredTable(handsFree, key: "cleanup", path: "dictation.hands_free.cleanup")
+                    var override = CleanupOverride()
+                    if let value = try optionalString(cleanup, key: "model", path: "dictation.hands_free.cleanup.model") {
+                        override.model = value
+                    }
+                    if let value = try optionalString(cleanup, key: "reasoning", path: "dictation.hands_free.cleanup.reasoning") {
+                        override.reasoning = value
+                    }
+                    if let value = try optionalDuration(cleanup, key: "timeout", path: "dictation.hands_free.cleanup.timeout") {
+                        override.timeout = value
+                    }
+                    if let value = try optionalString(cleanup, key: "prompt", path: "dictation.hands_free.cleanup.prompt") {
+                        override.prompt = value
+                    }
+                    if cleanup.contains(key: "extra_body") {
+                        let body = try requiredTable(cleanup, key: "extra_body", path: "dictation.hands_free.cleanup.extra_body")
+                        override.extraBody = try jsonObject(body, path: "dictation.hands_free.cleanup.extra_body")
+                    }
+                    config.dictation.handsFree.cleanup = override
                 }
             }
         }
@@ -395,6 +460,15 @@ enum ConfigParsing {
             } catch {
                 throw ConfigError("\(path)[\(index)]: expected a string")
             }
+        }
+        return values
+    }
+
+    private static func phraseArray(_ table: TOMLTable, key: String, path: String) throws -> [String] {
+        let values = try stringArray(table, key: key, path: path)
+        guard !values.isEmpty else { throw ConfigError("\(path): must not be empty") }
+        guard values.allSatisfy({ value in value.contains(where: { $0.isLetter || $0.isNumber }) }) else {
+            throw ConfigError("\(path): phrases must contain a word")
         }
         return values
     }
