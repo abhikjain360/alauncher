@@ -37,6 +37,17 @@ func loadConfig() -> Config {
     }
 }
 
+func keepOnlyLoginEnvironment() {
+    let loginVariables: Set = [
+        "HOME", "USER", "LOGNAME", "SHELL", "TMPDIR", "SSH_AUTH_SOCK", "SECURITYSESSIONID", "COMMAND_MODE",
+        "XPC_FLAGS", "XPC_SERVICE_NAME", "OSLogRateLimit", "__CF_USER_TEXT_ENCODING", "__CFBundleIdentifier",
+    ]
+    for name in ProcessInfo.processInfo.environment.keys where !loginVariables.contains(name) {
+        unsetenv(name)
+    }
+    setenv("PATH", "/usr/bin:/bin:/usr/sbin:/sbin", 1)
+}
+
 func runCommand(_ arguments: [String]) async -> Int32 {
     switch arguments.first {
     case "help", "-h", "--help":
@@ -71,6 +82,7 @@ if let index = arguments.firstIndex(of: "--spike") {
     }
     dispatchMain()
 } else {
+    keepOnlyLoginEnvironment()
     // Top-level code starts on the main thread.
     MainActor.assumeIsolated {
         let app = NSApplication.shared
