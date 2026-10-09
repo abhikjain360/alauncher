@@ -12,7 +12,7 @@ It is configured only through text files, so there is no settings UI. The produc
 | Path | What it holds |
 |---|---|
 | `Package.swift` | The root package, in Swift 5 language mode: the app and its modules. |
-| `Sources/alauncher` | Entry point: app mode, CLI subcommands, and the temporary spike harness (`Spike.swift`). |
+| `Sources/alauncher` | Entry point: app mode, CLI subcommands, the Do Not Disturb toggle, and the temporary spike harness (`Spike.swift`). |
 | `Sources/Core` | Config model, loader and store (TOML via TOMLDecoder), plus `Paths` and `Log`. |
 | `Sources/Overlay` | The bottom-of-screen pill and the `TextPanel` popup. AppKit only. |
 | `Sources/Dictation` | See below. |

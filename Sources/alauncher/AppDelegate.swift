@@ -59,7 +59,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     }
 
     private func builtInCommands() -> [BuiltInCommand] {
-        appCommands() + windowCommands()
+        appCommands() + [
+            BuiltInCommand(title: "Toggle Do Not Disturb", keywords: ["dnd", "focus"], symbol: "moon.fill") {
+                DoNotDisturb.toggle()
+            },
+        ] + windowCommands()
     }
 
     /// The commands about alauncher itself. They also make up the menu-bar menu.
