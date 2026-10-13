@@ -143,7 +143,7 @@ prefixes = ["my lord", "milord"]        # a dictation starting with one of these
 backend = "opencode"                    # opencode | direct (the [cleanup] endpoint, no tools)
 opencode = "opencode"                   # found through PATH and launcher.extra_path
 model = "deepseek/deepseek-flash"       # opencode provider/model; its auth is set up in opencode
-reasoning = "high"                      # opencode --variant
+reasoning = "high"                      # opencode model variant, sent as model#variant
 tools = ["websearch", "webfetch"]       # opencode tools the ask agent may use
 prompt = """
 You answer spoken questions. The question comes from speech-to-text, so it may contain misheard words; interpret it charitably. Answer directly and concisely in plain text, without markdown headings or tables; use a short list only when it helps. Search the web when the answer depends on current or specific facts.

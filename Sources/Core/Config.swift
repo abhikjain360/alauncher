@@ -218,7 +218,7 @@ public struct AskSettings: Equatable, Sendable {
     public var opencode = "opencode"
     /// opencode `provider/model`.
     public var model = "deepseek/deepseek-flash"
-    /// opencode `--variant`.
+    /// opencode model variant, sent as `model#variant`.
     public var reasoning = "high"
     public var tools = ["websearch", "webfetch"]
     public var prompt = AskSettings.defaultPrompt

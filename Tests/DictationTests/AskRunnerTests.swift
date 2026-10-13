@@ -108,13 +108,13 @@ private func parse(_ fixture: String) -> (parser: OpencodeEventParser, events: [
 }
 
 @Test func runArguments() {
-    #expect(OpencodeLaunch.arguments(question: "why?", model: "deepseek/deepseek-flash", variant: "high", sessionID: nil, directory: "/d") == [
-        "run", "--format", "json", "--agent", "alauncher-ask", "-m", "deepseek/deepseek-flash",
-        "--variant", "high", "--dir", "/d", "--", "why?",
+    #expect(OpencodeLaunch.arguments(question: "why?", model: "deepseek/deepseek-flash", variant: "high", sessionID: nil) == [
+        "run", "--standalone", "--format", "json", "--agent", "alauncher-ask", "-m", "deepseek/deepseek-flash#high",
+        "--", "why?",
     ])
-    #expect(OpencodeLaunch.arguments(question: "-rf and more", model: "m", variant: "", sessionID: "ses_9", directory: "/d") == [
-        "run", "--format", "json", "--agent", "alauncher-ask", "-m", "m",
-        "--session", "ses_9", "--dir", "/d", "--", "-rf and more",
+    #expect(OpencodeLaunch.arguments(question: "-rf and more", model: "m", variant: "", sessionID: "ses_9") == [
+        "run", "--standalone", "--format", "json", "--agent", "alauncher-ask", "-m", "m",
+        "--session", "ses_9", "--", "-rf and more",
     ])
 }
 

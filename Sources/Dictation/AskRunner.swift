@@ -29,7 +29,7 @@ public enum AskError: Error, Equatable, CustomStringConvertible {
 /// One event from `opencode run --format json`, reduced to what the popup needs.
 ///
 /// Every line is a JSON object with `type`, `timestamp` and `sessionID`. The types seen with
-/// opencode 1.18.30 (fixtures in Tests/DictationTests/OpencodeFixtures.swift):
+/// opencode 1.18.30 and 2.0.26 (fixtures in Tests/DictationTests/OpencodeFixtures.swift):
 /// - `step_start`: `part.type == "step-start"`.
 /// - `text`: `part.id`, `part.text` (the part's whole text so far), `part.time`.
 /// - `tool_use`: `part.tool` ("websearch", "webfetch"), `part.state.status`, `.input`, `.output`.
@@ -131,12 +131,11 @@ enum OpencodeLaunch {
         return String(decoding: data, as: UTF8.self)
     }
 
-    static func arguments(question: String, model: String, variant: String, sessionID: String?, directory: String) -> [String] {
-        var arguments = ["run", "--format", "json", "--agent", agentName, "-m", model]
+    static func arguments(question: String, model: String, variant: String, sessionID: String?) -> [String] {
         let variant = variant.trimmingCharacters(in: .whitespacesAndNewlines)
-        if !variant.isEmpty { arguments += ["--variant", variant] }
+        var arguments = ["run", "--standalone", "--format", "json", "--agent", agentName, "-m", variant.isEmpty ? model : "\(model)#\(variant)"]
         if let sessionID { arguments += ["--session", sessionID] }
-        arguments += ["--dir", directory, "--", question]
+        arguments += ["--", question]
         return arguments
     }
 
@@ -224,16 +223,12 @@ public final class AskRunner {
         let directory = Paths.ensure(Paths.supportDirectory.appendingPathComponent("ask", isDirectory: true))
         var childEnvironment = environment
         childEnvironment["PATH"] = path.joined(separator: ":")
-        childEnvironment["OPENCODE_ENABLE_EXA"] = "1"
-        childEnvironment["OPENCODE_DISABLE_CLAUDE_CODE_PROMPT"] = "1"
-        childEnvironment["OPENCODE_DISABLE_CLAUDE_CODE_SKILLS"] = "1"
         childEnvironment["OPENCODE_CONFIG_CONTENT"] = OpencodeLaunch.agentConfigJSON(prompt: ask.prompt, tools: ask.tools)
 
         let process = OpencodeProcess(
             executable: executable,
             arguments: OpencodeLaunch.arguments(
-                question: question, model: ask.model, variant: ask.reasoning,
-                sessionID: sessionID, directory: directory.path
+                question: question, model: ask.model, variant: ask.reasoning, sessionID: sessionID
             ),
             environment: childEnvironment,
             directory: directory
